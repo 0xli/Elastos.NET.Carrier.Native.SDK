@@ -1,0 +1,47 @@
+diff -ruN flatcc-0.6.0/src/compiler/codegen_c_reader.c flatcc-0.6.0-mod/src/compiler/codegen_c_reader.c
+--- flatcc-0.6.0/src/compiler/codegen_c_reader.c	2019-08-17 19:20:07
++++ flatcc-0.6.0-mod/src/compiler/codegen_c_reader.c	2024-04-24 13:18:06
+@@ -1523,7 +1523,6 @@
+     const char *nsc = out->nsc;
+     fb_scoped_name_t snt;
+     fb_scoped_name_t snref;
+-    uint64_t present_id;
+     fb_literal_t literal;
+ 
+     assert(ct->symbol.kind == fb_is_table);
+@@ -1558,7 +1557,6 @@
+     for (sym = ct->members; sym; sym = sym->link) {
+         current_key_processed = 0;
+         member = (fb_member_t *)sym;
+-        present_id = member->id;
+         is_primary_key = ct->primary_key == member;
+         print_doc(out, "", member->doc);
+         /*
+@@ -1723,7 +1721,6 @@
+                 }
+                 break;
+             case fb_is_union:
+-                present_id--;
+                 fprintf(out->fp,
+                     "__%sdefine_union_field(%s, %llu, %s, %.*s, %s, %u)\n",
+                     nsc, nsc, llu(member->id), snt.text, n, s, snref.text, r);
+@@ -1749,7 +1746,6 @@
+                 break;
+             }
+             if (member->type.ct->symbol.kind == fb_is_union) {
+-                present_id--;
+                 fprintf(out->fp,
+                     "__%sdefine_union_vector_field(%s, %llu, %s, %.*s, %s, %u)\n",
+                     nsc, nsc, llu(member->id), snt.text, n, s, snref.text, r);
+diff -ruN flatcc-0.6.0/src/compiler/symbols.h flatcc-0.6.0-mod/src/compiler/symbols.h
+--- flatcc-0.6.0/src/compiler/symbols.h	2019-08-17 19:20:07
++++ flatcc-0.6.0-mod/src/compiler/symbols.h	2024-04-24 13:18:36
+@@ -433,7 +433,7 @@
+ }
+ 
+ /* Constants are specific to 32-bit FNV-1a hash. It is important to use unsigned integers. */
+-static inline uint32_t fb_hash_fnv1a_32_init()
++static inline uint32_t fb_hash_fnv1a_32_init(void)
+ {
+     return 2166136261UL;
+ }

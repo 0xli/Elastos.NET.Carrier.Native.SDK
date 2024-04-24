@@ -4,6 +4,8 @@ include(CarrierDefaults)
 include(ExternalProject)
 include(ExternalConfigureArgs)
 
+set(PATCH_ARGS -s -p1 < "${CMAKE_CURRENT_LIST_DIR}/flatcc.patch")
+
 ExternalProject_Add(
     flatcc-parser
 
@@ -16,6 +18,7 @@ ExternalProject_Add(
 
     BUILD_IN_SOURCE 1
 
+    PATCH_COMMAND ${PATCH_EXE} ${PATCH_ARGS}
     CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${CARRIER_HOST_TOOLS_DIR}
         -DCMAKE_BUILD_TYPE=Release
         -DFLATCC_INSTALL=ON
