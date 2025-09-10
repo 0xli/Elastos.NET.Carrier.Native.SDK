@@ -36,5 +36,8 @@ ExternalProject_Add(
         -DBUILD_TESTS=OFF
         ${CMAKE_ARGS_INIT}
     BUILD_COMMAND ${BUILD_CMD} libconfig ${BUILD_ARGS}
-    INSTALL_COMMAND ${INSTALL_CMD} install/fast ${INSTALL_ARGS}
+    INSTALL_COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        <SOURCE_DIR>/lib/libconfig.h ${CARRIER_INT_DIST_DIR}/include/libconfig.h
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        <BINARY_DIR>/lib/liblibconfig.a ${CARRIER_INT_DIST_DIR}/lib/liblibconfig.a
 )
