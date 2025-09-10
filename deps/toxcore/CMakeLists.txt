@@ -4,6 +4,8 @@ include(CarrierDefaults)
 include(ExternalProject)
 include(ExternalCMakeArgs)
 
+set(PATCH_ARGS -s -p1 < "${CMAKE_CURRENT_LIST_DIR}/toxcore.patch")
+
 ExternalProject_Add(
     toxcore0
 
@@ -13,6 +15,8 @@ ExternalProject_Add(
     DOWNLOAD_NAME "c-toxcore-0.2.12.carrier.tar.gz"
     DOWNLOAD_DIR ${CARRIER_DEPS_TARBALL_DIR}
     DOWNLOAD_NO_PROGRESS 1
+    
+    PATCH_COMMAND ${PATCH_EXE} ${PATCH_ARGS}
 
     CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${CARRIER_INT_DIST_DIR}
         -DCMAKE_USE_SLIM_PTHREAD_INIT=TRUE

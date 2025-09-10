@@ -1,0 +1,10 @@
+diff -ru cJSON-1.7.10/CMakeLists.txt cJSON-1.7.10-mod/CMakeLists.txt
+--- cJSON-1.7.10/CMakeLists.txt	2019-05-12 08:23:49.000000000 +0800
++++ cJSON-1.7.10-mod/CMakeLists.txt	2018-06-01 15:07:55.000000000 +0800
+@@ -1,5 +1,5 @@
+ set(CMAKE_LEGACY_CYGWIN_WIN32 0)
+-cmake_minimum_required(VERSION 2.8.5)
++cmake_minimum_required(VERSION 3.5)
+ 
+ project(cJSON C)
+ 

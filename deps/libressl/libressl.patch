@@ -1,0 +1,10 @@
+diff -ru libressl-2.9.2/CMakeLists.txt libressl-2.9.2-mod/CMakeLists.txt
+--- libressl-2.9.2/CMakeLists.txt	2019-05-12 08:23:49.000000000 +0800
++++ libressl-2.9.2-mod/CMakeLists.txt	2018-06-01 15:07:55.000000000 +0800
+@@ -1,5 +1,5 @@
+-cmake_minimum_required (VERSION 3.0)
++cmake_minimum_required (VERSION 3.5)
+ include(CheckFunctionExists)
+ include(CheckSymbolExists)
+ include(CheckLibraryExists)
+ include(CheckIncludeFiles)

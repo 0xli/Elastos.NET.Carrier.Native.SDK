@@ -4,6 +4,8 @@ include(CarrierDefaults)
 include(ExternalProject)
 include(ExternalCMakeArgs)
 
+set(PATCH_ARGS -s -p1 < "${CMAKE_CURRENT_LIST_DIR}/cJSON.patch")
+
 ExternalProject_Add(
     cJSON
 
@@ -14,6 +16,7 @@ ExternalProject_Add(
     DOWNLOAD_DIR ${CARRIER_DEPS_TARBALL_DIR}
     DOWNLOAD_NO_PROGRESS 1
 
+    PATCH_COMMAND ${PATCH_EXE} ${PATCH_ARGS}
     CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${CARRIER_INT_DIST_DIR}
         -DBUILD_SHARED_LIBS=Off
         -DENABLE_HIDDEN_SYMBOLS=On

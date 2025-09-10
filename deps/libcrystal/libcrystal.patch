@@ -1,0 +1,10 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,5 +1,5 @@
+-cmake_minimum_required(VERSION 2.9)
+-cmake_policy(VERSION 2.9)
++cmake_minimum_required(VERSION 3.5)
++cmake_policy(VERSION 3.5)
+ project(libcrystal C)
+ cmake_policy(SET CMP0054 NEW)
+ 

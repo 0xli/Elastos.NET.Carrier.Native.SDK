@@ -1,6 +1,12 @@
 diff -ru zlib-1.2.8/CMakeLists.txt zlib-1.2.8-mod/CMakeLists.txt
 --- zlib-1.2.8/CMakeLists.txt	2013-04-29 08:23:49.000000000 +0800
 +++ zlib-1.2.8-mod/CMakeLists.txt	2018-06-01 15:07:55.000000000 +0800
+@@ -1,4 +1,4 @@
+-cmake_minimum_required(VERSION 2.4.4)
++cmake_minimum_required(VERSION 3.5)
+ set(CMAKE_ALLOW_LOOSE_LOOP_CONSTRUCTS ON)
+ 
+ project(zlib C)
 @@ -60,7 +60,7 @@
  check_include_file(unistd.h Z_HAVE_UNISTD_H)
  
@@ -82,3 +88,22 @@ diff -ru zlib-1.2.8/CMakeLists.txt zlib-1.2.8-mod/CMakeLists.txt
 +    target_link_libraries(minigzip64 zlibstatic)
      set_target_properties(minigzip64 PROPERTIES COMPILE_FLAGS "-D_FILE_OFFSET_BITS=64")
  endif()
+diff -ru zlib-1.2.8/zutil.h zlib-1.2.8-mod/zutil.h
+--- zlib-1.2.8/zutil.h	2013-04-29 08:23:49.000000000 +0800
++++ zlib-1.2.8-mod/zutil.h	2018-06-01 15:07:55.000000000 +0800
+@@ -124,6 +124,7 @@
+ #  endif
+ #endif
+ 
++#ifndef __APPLE__
+ #if defined(MACOS) || defined(TARGET_OS_MAC)
+ #  define OS_CODE  0x07
+ #  if defined(__MWERKS__) && __dest_os != __be_os && __dest_os != __mac_os
+@@ -134,6 +135,7 @@
+ #    endif
+ #  endif
+ #endif
++#endif
+ 
+ #if defined(ATARI) || defined(atarist)
+ #  define OS_CODE  0x05
