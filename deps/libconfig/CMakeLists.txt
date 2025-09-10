@@ -39,5 +39,5 @@ ExternalProject_Add(
     INSTALL_COMMAND ${CMAKE_COMMAND} -E copy_if_different
         <SOURCE_DIR>/lib/libconfig.h ${CARRIER_INT_DIST_DIR}/include/libconfig.h
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        <BINARY_DIR>/lib/liblibconfig.a ${CARRIER_INT_DIST_DIR}/lib/liblibconfig.a
+        <BINARY_DIR>/out/liblibconfig.a ${CARRIER_INT_DIST_DIR}/lib/liblibconfig.a
 )
