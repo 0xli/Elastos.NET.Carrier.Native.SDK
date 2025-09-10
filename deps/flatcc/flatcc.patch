@@ -45,15 +45,15 @@ diff -ruN flatcc-0.6.0/CMakeLists.txt flatcc-0.6.0-mod/CMakeLists.txt
  
  # Disable build of tests and samples. Due to custom build step
  # dependency on flatcc tool, some custom build configurations may
-@@ -67,7 +67,7 @@
- # Disable Werror for release builds
- # Can be overridden on command line with cmake -DFLATCC_ALLOW_WERROR=on
- if (CMAKE_BUILD_TYPE STREQUAL "Debug")
--    option(FLATCC_ALLOW_WERROR "allow warnings to become errors in debug mode" ON)
-+    option(FLATCC_ALLOW_WERROR "allow warnings to become errors in debug mode" OFF)
- else()
-     option(FLATCC_ALLOW_WERROR "allow warnings to become errors in release mode" OFF)
- endif()
+@@ -90,7 +90,7 @@
+ # -Werror is only set for some compiler versions that are believed to
+ # to not generate any warnings. If the assumption breaks, disable
+ # this option if the warning is not significant.
+-option (FLATCC_ALLOW_WERROR "allow -Werror to be configured" ON)
++option (FLATCC_ALLOW_WERROR "allow -Werror to be configured" OFF)
+ 
+ # Experimental setting - sometimes the code branches on a constant
+ # expression in order to select the best option for a given type size or
 diff -ruN flatcc-0.6.0/src/compiler/symbols.h flatcc-0.6.0-mod/src/compiler/symbols.h
 --- flatcc-0.6.0/src/compiler/symbols.h	2019-08-17 19:20:07
 +++ flatcc-0.6.0-mod/src/compiler/symbols.h	2024-04-24 13:18:36
