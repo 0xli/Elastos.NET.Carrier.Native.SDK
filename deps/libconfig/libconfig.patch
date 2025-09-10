@@ -1,8 +1,1 @@
---- a/lib/libconfigcpp.c++
-+++ b/lib/libconfigcpp.c++
-@@ -34,6 +34,7 @@
- #include <sstream>
-+#include <cstdlib>
- 
- namespace libconfig
- {
+# Empty patch - no changes needed
