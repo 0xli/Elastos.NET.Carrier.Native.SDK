@@ -37,8 +37,8 @@ ExternalProject_Add(
     libconfig
 
     PREFIX ${CARRIER_DEPS_BUILD_PREFIX}
-    URL "https://hyperrealm.github.io/libconfig/dist/libconfig-1.7.2.tar.gz"
-    URL_HASH SHA256=7c3c7a9c73ff3302084386e96f903eb62ce06953bb1666235fac74363a16fad9
+    URL "https://github.com/hyperrealm/libconfig/archive/v1.7.2.tar.gz"
+    URL_HASH SHA256=f67ac44099916ae260a6c9e290a90809e7d782d96cdd462cac656ebc5b685726
     DOWNLOAD_NAME "libconfig-1.7.2.tar.gz"
     DOWNLOAD_DIR ${CARRIER_DEPS_TARBALL_DIR}
     DOWNLOAD_NO_PROGRESS 1
