@@ -42,6 +42,13 @@ diff -ruN flatcc-0.6.0/CMakeLists.txt flatcc-0.6.0-mod/CMakeLists.txt
  #cmake_minimum_required (VERSION 2.8.11)
 -cmake_minimum_required (VERSION 2.8)
 +cmake_minimum_required (VERSION 3.5)
+@@ -44,7 +44,7 @@
+     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c11")
+ endif()
+ if (CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Werror")
++    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Werror -Wno-misleading-indentation")
+ endif()
  
  # Disable build of tests and samples. Due to custom build step
  # dependency on flatcc tool, some custom build configurations may
