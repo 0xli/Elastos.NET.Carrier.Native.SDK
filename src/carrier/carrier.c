@@ -3637,7 +3637,20 @@ static void notify_offreceipt_received(Carrier *w, const char *to,
 static uint32_t generate_msgid(Carrier *w)
 {
     static uint32_t msg_id = 0;
-    return ++msg_id == 0 ? ++msg_id : msg_id;
+    uint32_t seed;
+
+    (void)w;
+
+    if (msg_id == 0) {
+        seed = (uint32_t)((uint64_t)time(NULL) & 0x7fffffffU);
+        msg_id = seed == 0 ? 1 : seed;
+    }
+
+    msg_id++;
+    if (msg_id == 0)
+        msg_id = 1;
+
+    return msg_id;
 }
 
 static

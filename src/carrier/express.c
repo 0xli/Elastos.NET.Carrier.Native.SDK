@@ -73,6 +73,8 @@ struct ExpConnector {
 
     int curr_express_node;
     int express_nodes_size;
+    uint64_t last_offmsg_timestamp;
+    uint64_t pending_del_timestamp;
     ExpNode express_nodes[0];
 };
 
@@ -113,6 +115,66 @@ static const int  EXP_HTTP_MAGICSIZE   = 4;
 static const int  EXP_HTTP_REQ_TIMEOUT     = 60 * 1000; // ms
 static const int  EXP_HTTP_HEAD_TIMEOUT     = 5 * 1000; // ms
 #define  EXP_HTTP_URL_MAXSIZE 1024
+static const char *EXP_STATE_FILENAME = "express_state.dat";
+
+static void express_state_path(ExpressConnector *connector, char *buf, size_t len)
+{
+    const char *base = connector && connector->carrier ? connector->carrier->pref.data_location : NULL;
+    if (!buf || len == 0)
+        return;
+
+    if (!base || !*base) {
+        buf[0] = '\0';
+        return;
+    }
+
+    snprintf(buf, len, "%s/%s", base, EXP_STATE_FILENAME);
+}
+
+static void save_express_state(ExpressConnector *connector)
+{
+    FILE *fp;
+    char path[PATH_MAX];
+
+    express_state_path(connector, path, sizeof(path));
+    if (!path[0])
+        return;
+
+    fp = fopen(path, "w");
+    if (!fp) {
+        vlogW("Express: save state open failed: %s", path);
+        return;
+    }
+
+    fprintf(fp, "%" PRIu64 " %" PRIu64 "\n",
+            connector->last_offmsg_timestamp,
+            connector->pending_del_timestamp);
+    fclose(fp);
+}
+
+static void load_express_state(ExpressConnector *connector)
+{
+    FILE *fp;
+    char path[PATH_MAX];
+    uint64_t last_ts = 0;
+    uint64_t pending_ts = 0;
+
+    express_state_path(connector, path, sizeof(path));
+    if (!path[0])
+        return;
+
+    fp = fopen(path, "r");
+    if (!fp)
+        return;
+
+    if (fscanf(fp, "%" SCNu64 " %" SCNu64, &last_ts, &pending_ts) >= 1) {
+        connector->last_offmsg_timestamp = last_ts;
+        connector->pending_del_timestamp = pending_ts;
+        vlogD("Express: loaded state last=%" PRIu64 ", pending_del=%" PRIu64,
+              connector->last_offmsg_timestamp, connector->pending_del_timestamp);
+    }
+    fclose(fp);
+}
 
 static inline int conv_curlcode(int curlcode) {
     return (curlcode | EXP_CURLCODE_MASK);
@@ -199,9 +261,11 @@ static int process_message(ExpressConnector *connector,
         return CARRIER_EXPRESS_ERROR(ERROR_BAD_FLATBUFFER);
     }
 
-    if (last_ts > pmsg.timestamp) {
-        vlogE("Express: invalid message timestamp.");
-        return -1;
+    if (last_ts >= pmsg.timestamp) {
+        *timestamp = last_ts;
+        vlogW("Express: duplicate/old offline message dropped. ts=%" PRIu64 ", last=%" PRIu64,
+              pmsg.timestamp, last_ts);
+        return 0;
     }
 
     if (pmsg.type == 'M') {
@@ -498,6 +562,7 @@ static int del_msgs(ExpressConnector *connector, int64_t msg_lasttime)
     snprintf(lasttime, sizeof(lasttime), "%"PRId64, msg_lasttime);
     lasttime_len = strlen(lasttime);
 
+    vlogI("Express: delete attempt start until=%" PRId64, msg_lasttime);
     for(idx = 0; idx < connector->express_nodes_size; idx++) {
         int node_idx = (idx + connector->curr_express_node) % connector->express_nodes_size;
         ExpNode *node = &connector->express_nodes[node_idx];
@@ -523,8 +588,11 @@ static int del_msgs(ExpressConnector *connector, int64_t msg_lasttime)
         rc = http_do(connector, node->ipv4, node->port,
                      path, HTTP_METHOD_DELETE,
                      NULL);
-        if (rc >= 0)
+        if (rc >= 0) {
+            vlogI("Express: delete succeeded until=%" PRId64 " node=%s:%u",
+                  msg_lasttime, node->ipv4, node->port);
             break;
+        }
     }
     if(rc < 0) {
         vlogE("Express: delete message failed.(%x)", rc);
@@ -606,6 +674,7 @@ static int pullmsgs_runner(ExpTasklet *base)
     int idx;
 
     path = my_userid(connector);
+    task->last_timestamp = connector->last_offmsg_timestamp;
     for(idx = 0; idx < connector->express_nodes_size; idx++) {
         int node_idx = (idx + connector->curr_express_node) % connector->express_nodes_size;
         ExpNode *node = &connector->express_nodes[node_idx];
@@ -622,13 +691,28 @@ static int pullmsgs_runner(ExpTasklet *base)
         return rc;
     }
     connector->curr_express_node = (idx + connector->curr_express_node) % connector->express_nodes_size;
+    if (task->last_timestamp > connector->last_offmsg_timestamp)
+        connector->last_offmsg_timestamp = task->last_timestamp;
+    if (task->last_timestamp > 0 && task->last_timestamp > connector->pending_del_timestamp) {
+        connector->pending_del_timestamp = task->last_timestamp;
+        vlogI("Express: pending delete watermark updated to=%" PRIu64,
+              connector->pending_del_timestamp);
+    }
+    save_express_state(connector);
     vlogD("Express: Success to pull message from %s.", path);
 
-    if(task->last_timestamp > 0) {
-        rc = del_msgs(connector, task->last_timestamp);
+    if(connector->pending_del_timestamp > 0) {
+        vlogI("Express: retrying delete for pending watermark=%" PRIu64,
+              connector->pending_del_timestamp);
+        rc = del_msgs(connector, connector->pending_del_timestamp);
         if(rc < 0) {
-            vlogE("Express: Failed to delete message.(%x)", rc);
-            return rc;
+            vlogW("Express: Failed to delete message.(%x), pending watermark=%" PRIu64
+                  " will retry on next cycle.", rc, connector->pending_del_timestamp);
+        } else {
+            vlogI("Express: pending delete cleared for watermark=%" PRIu64,
+                  connector->pending_del_timestamp);
+            connector->pending_del_timestamp = 0;
+            save_express_state(connector);
         }
     }
     return 0;
@@ -850,6 +934,9 @@ ExpressConnector *express_connector_create(Carrier *carrier,
     connector->stop_flag = 0;
 
     connector->magic_num = htonl(EXP_HTTP_MAGICNUM);
+    connector->last_offmsg_timestamp = 0;
+    connector->pending_del_timestamp = 0;
+    load_express_state(connector);
 
     connector->express_nodes_size = carrier->pref.express_size;
     for(idx = 0; idx < connector->express_nodes_size; idx++) {
