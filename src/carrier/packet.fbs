@@ -30,11 +30,13 @@ table userinfo {
     gender : string;
     email  : string;
     region : string;
-    // AgentNet client metadata (APPENDED — FlatBuffers is forward/backward
+    // AgentNet client metadata (APPENDED - FlatBuffers is forward/backward
     // compatible, so a peer that predates a field just reads its default). Lets
     // peers negotiate capabilities (e.g. proto_version>=1 => supports the
     // toxcore file-transfer channel for large files, vs. inline bulkmsg) and
     // show the friend's platform/build. proto_version 0 = a legacy peer.
+    // NOTE: keep this file pure ASCII - the bundled FlatCC parser rejects
+    // non-ASCII bytes (e.g. an em dash), breaking the legacy CMake build.
     proto_version : uint = 0;
     platform      : string;   // "ios" | "android" | "js" | "darwin" | "linux" | "win32"
     os_version    : string;   // e.g. "17.5", "14", "node-24.2.0"

@@ -97,34 +97,37 @@ cap — this is why JS can send very large files while native is stuck at ~3.7 M
 
 ### Two ways to give native parity
 
-**Option A — raise the bulk cap (small, ships now).**
-Bump `CARRIER_MAX_APP_BULKMSG_LEN` (e.g. to 32–64 MB) on native AND JS. The
-bulkmsg path already fragments (1 KB units, shared `tid`, `totalsz` on the first
-fragment) and reassembles; the JS receiver now has a proper reorder buffer +
-retransmit (peer ≥ 0.1.87) so multi-fragment bulk messages survive reordering.
-Trade-offs: the whole file is buffered in memory (no streaming / resume), and
-the reliable send window (1024 unacked packets) makes tens-of-MB the practical
-ceiling, not hundreds. Good enough for "moderately large" files with near-zero
-code.
+**Option A — raise the bulk cap (SHIPPED).**
+`CARRIER_MAX_APP_BULKMSG_LEN` is now **16 MB** (was 5 MB) on native AND JS
+(peer ≥ 0.1.87), so inline sends carry ~11 MB real files. The bulkmsg path
+already fragments (1 KB units, shared `tid`, `totalsz` on the first fragment)
+and reassembles; the JS receiver now has a proper reorder buffer + retransmit
+(≥ 0.1.87, receive window widened to 8192) so multi-fragment bulk messages
+survive reordering. Trade-offs: the whole file is buffered in memory (no
+streaming / resume), and the reliable window bounds lossy-path throughput. Good
+for "moderately large" files with near-zero code.
 
-**Option B — implement toxcore messenger file transfer (full parity).**
-Port the JS `filetransfer.ts` wire protocol into the native SDK as a new module
+**Option B — implement messenger file transfer (full parity).**
+Port the JS file-transfer wire protocol into the native SDK as a new module
 riding `dht_friend_message` (the same reliable channel `send_bulk_message` uses),
-using packet ids 80/81/82. This gives streaming, resume, and unlimited size, and
-is byte-compatible with JS `sendFile()`/`acceptFile()`. It is a substantial,
-carefully-wire-matched effort (~800 lines of C mirroring `filetransfer.ts`):
-  - SENDREQUEST: file id, size, name, kind.
-  - CONTROL: accept / pause / resume / cancel.
-  - DATA: `[file_number][offset][chunk]`, receiver reassembles by offset.
-  - The receiver acknowledges/queues out-of-order chunks (native
-    `dht_friend_message` is already reliable + in-order, so the native side can
-    be much simpler than the JS side, which re-implements reliability over a
-    droppable channel for lossy GFW paths).
-Reference: `@decentnetwork/peer` `src/compat/filetransfer.ts` and
-`docs/PROTOCOL.md` are the spec.
+using packet ids 80/81/82. This gives streaming, resume, and unlimited size,
+byte-compatible with JS `sendFile()`/`acceptFile()`.
 
-**Recommendation:** ship Option A now for immediate relief, pursue Option B as a
-scoped native project when unlimited/streaming transfers are needed. Gate the
-choice on the peer's advertised `proto_version` (§1): a sender uses messenger
-file transfer when `proto_version >= 2` (reserve v2 for "file-transfer capable"),
-else falls back to inline bulkmsg.
+The complete, authoritative wire spec is
+**`@decentnetwork/peer` `docs/FILE_TRANSFER_PROTOCOL.md`** (reference impl:
+`src/compat/filetransfer.ts`). Key points for the native port:
+  - `FILE_SENDREQUEST(80)`: `[filenum u8][file_type u32 BE][file_size u64 BE][file_id 32][filename]`.
+  - `FILE_CONTROL(81)`: `[send_receive u8][filenum u8][control_type u8][data]`;
+    `ACCEPT=0 PAUSE=1 KILL=2 SEEK=3 ACK=4`; ACK data = `[acked_offset u32 BE]`.
+  - `FILE_DATA(82)`: `[filenum u8][offset u32 BE][chunk ≤1367]`, receiver
+    reassembles by offset.
+  - **Native can ignore `FILE_FEC(83)`** and skip the JS side's Vegas/BBR window
+    + retransmit: `dht_friend_message` is already reliable + in-order, so the
+    native side just streams DATA and the receiver periodically ACKs the
+    contiguous high-water offset (required, or the JS sender's window stalls).
+    This makes the native module a few hundred lines, not ~800.
+
+**Recommendation:** Option A is shipped for immediate relief. Pursue Option B as
+a scoped native project for unlimited/streaming transfers. Gate the choice on the
+peer's advertised `proto_version` (§1): reserve `proto_version >= 2` for
+"messenger-file-transfer capable" and fall back to inline bulkmsg otherwise.
