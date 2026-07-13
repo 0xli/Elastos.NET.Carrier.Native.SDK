@@ -1052,6 +1052,34 @@ char *carrier_get_nodeid(Carrier *carrier, char *nodeid, size_t len);
 CARRIER_API
 char *carrier_get_userid(Carrier *carrier, char *userid, size_t len);
 
+/** Size in bytes of an accountless rendezvous identity proof. */
+#define CARRIER_IDENTITY_AUTH_PROOF_BYTES 32
+
+/**
+ * Create a domain-separated authentication proof with this Carrier identity.
+ *
+ * This function performs no Carrier network operation. It uses the identity
+ * secret already loaded by the Carrier instance, derives a shared key with
+ * the supplied ephemeral X25519 server public key, and authenticates the
+ * exact caller-provided transcript with HMAC-SHA256. The identity secret and
+ * intermediate keys are never returned.
+ *
+ * @param carrier           [in] Carrier node instance containing the identity.
+ * @param server_public_key [in] 32-byte ephemeral X25519 public key.
+ * @param transcript        [in] Exact protocol transcript bytes.
+ * @param transcript_len    [in] Transcript length; must be 1..65536 bytes.
+ * @param proof             [out] 32-byte proof buffer.
+ *
+ * @return 0 on success, or -1 on error. Use carrier_get_error() for details.
+ */
+CARRIER_API
+int carrier_identity_create_auth_proof(
+        Carrier *carrier,
+        const uint8_t server_public_key[32],
+        const uint8_t *transcript,
+        size_t transcript_len,
+        uint8_t proof[CARRIER_IDENTITY_AUTH_PROOF_BYTES]);
+
 /******************************************************************************
  * Client information
  *****************************************************************************/

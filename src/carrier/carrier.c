@@ -57,6 +57,7 @@
 #include <winsock2.h>
 #endif
 #include <inttypes.h>
+#include <sodium.h>
 
 #include <crystal.h>
 
@@ -2745,6 +2746,52 @@ char *carrier_get_nodeid(Carrier *w, char *nodeid, size_t len)
 char *carrier_get_userid(Carrier *w, char *userid, size_t len)
 {
     return carrier_get_nodeid(w, userid, len);
+}
+
+int carrier_identity_create_auth_proof(
+        Carrier *w,
+        const uint8_t server_public_key[32],
+        const uint8_t *transcript,
+        size_t transcript_len,
+        uint8_t proof[CARRIER_IDENTITY_AUTH_PROOF_BYTES])
+{
+    static const char domain[] = "RSP-CARRIER-AUTH-KEY/1";
+    uint8_t identity_secret[crypto_box_SECRETKEYBYTES];
+    uint8_t shared_key[crypto_box_BEFORENMBYTES];
+    uint8_t auth_key[crypto_auth_hmacsha256_KEYBYTES];
+    int rc = -1;
+
+    if (!w || !server_public_key || !transcript || transcript_len == 0 ||
+            transcript_len > 65536 || !proof) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
+        return -1;
+    }
+
+    dht_self_get_secret_key(&w->dht, identity_secret);
+    if (crypto_box_beforenm(shared_key, server_public_key, identity_secret) != 0) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_ENCRYPT));
+        goto cleanup;
+    }
+
+    if (hmac_sha256(shared_key, sizeof(shared_key), domain, sizeof(domain) - 1,
+                    auth_key, sizeof(auth_key)) != sizeof(auth_key) ||
+            hmac_sha256(auth_key, sizeof(auth_key), transcript, transcript_len,
+                    proof, CARRIER_IDENTITY_AUTH_PROOF_BYTES) !=
+                    CARRIER_IDENTITY_AUTH_PROOF_BYTES) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_ENCRYPT));
+        goto cleanup;
+    }
+
+    carrier_set_error(0);
+    rc = 0;
+
+cleanup:
+    sodium_memzero(identity_secret, sizeof(identity_secret));
+    sodium_memzero(shared_key, sizeof(shared_key));
+    sodium_memzero(auth_key, sizeof(auth_key));
+    if (rc != 0)
+        sodium_memzero(proof, CARRIER_IDENTITY_AUTH_PROOF_BYTES);
+    return rc;
 }
 
 int carrier_set_self_nospam(Carrier *w, uint32_t nospam)
