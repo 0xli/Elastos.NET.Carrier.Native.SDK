@@ -126,8 +126,16 @@ extern "C" {
 /**
  * \~English
  * Carrier App max bulk message length.
+ *
+ * Raised 5 MB -> 16 MB (AgentNet) so inline file sends (FileModel base64
+ * envelope over bulkmsg) can carry ~11 MB real files, matching the JS SDK
+ * (@decentnetwork/peer >= 0.1.87) which raised the same cap and added a receive
+ * reorder buffer + retransmit so large multi-fragment bulk messages survive
+ * reordering. NOTE: the reliable send/receive window bounds throughput on lossy
+ * paths — for unlimited/streaming transfers use messenger file transfer
+ * (docs/AGENTNET_PROTOCOL.md Option B), not inline bulkmsg.
  */
-#define CARRIER_MAX_APP_BULKMSG_LEN        (5 * 1024 * 1024)
+#define CARRIER_MAX_APP_BULKMSG_LEN        (16 * 1024 * 1024)
 
 /**
  * \~English
