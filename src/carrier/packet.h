@@ -66,6 +66,16 @@ const char *packet_get_email(Packet *packet);
 
 const char *packet_get_region(Packet *packet);
 
+/* AgentNet client metadata (appended userinfo fields). proto_version 0 and
+ * NULL strings indicate a legacy peer that predates the extension. */
+uint32_t packet_get_proto_version(Packet *packet);
+
+const char *packet_get_platform(Packet *packet);
+
+const char *packet_get_os_version(Packet *packet);
+
+const char *packet_get_app_version(Packet *packet);
+
 const char *packet_get_hello(Packet *packet);
 
 int64_t packet_get_tid(Packet *packet);
@@ -95,6 +105,14 @@ void packet_set_phone(Packet *packet, const char *phone);
 void packet_set_email(Packet *packet, const char *email);
 
 void packet_set_region(Packet *packet, const char *region);
+
+void packet_set_proto_version(Packet *packet, uint32_t proto_version);
+
+void packet_set_platform(Packet *packet, const char *platform);
+
+void packet_set_os_version(Packet *packet, const char *os_version);
+
+void packet_set_app_version(Packet *packet, const char *app_version);
 
 void packet_set_hello(Packet *packet, const char *hello);
 

@@ -45,6 +45,12 @@ struct PacketUserInfo {
     const char *gender;
     const char *email;
     const char *region;
+    /* AgentNet client metadata (appended userinfo fields). proto_version 0 =
+     * legacy peer. See packet.fbs. */
+    uint32_t proto_version;
+    const char *platform;
+    const char *os_version;
+    const char *app_version;
 };
 
 struct PacketFriendReq {
@@ -310,6 +316,67 @@ const char *packet_get_region(Packet *cp)
     }
 
     return region;
+}
+
+/* AgentNet client metadata accessors (appended userinfo fields). */
+uint32_t packet_get_proto_version(Packet *cp)
+{
+    assert(cp);
+    if (cp->type == PACKET_TYPE_USERINFO)
+        return ((struct PacketUserInfo *)cp)->proto_version;
+    return 0;
+}
+
+const char *packet_get_platform(Packet *cp)
+{
+    assert(cp);
+    if (cp->type == PACKET_TYPE_USERINFO)
+        return ((struct PacketUserInfo *)cp)->platform;
+    return NULL;
+}
+
+const char *packet_get_os_version(Packet *cp)
+{
+    assert(cp);
+    if (cp->type == PACKET_TYPE_USERINFO)
+        return ((struct PacketUserInfo *)cp)->os_version;
+    return NULL;
+}
+
+const char *packet_get_app_version(Packet *cp)
+{
+    assert(cp);
+    if (cp->type == PACKET_TYPE_USERINFO)
+        return ((struct PacketUserInfo *)cp)->app_version;
+    return NULL;
+}
+
+void packet_set_proto_version(Packet *cp, uint32_t proto_version)
+{
+    assert(cp);
+    if (cp->type == PACKET_TYPE_USERINFO)
+        ((struct PacketUserInfo *)cp)->proto_version = proto_version;
+}
+
+void packet_set_platform(Packet *cp, const char *platform)
+{
+    assert(cp);
+    if (cp->type == PACKET_TYPE_USERINFO)
+        ((struct PacketUserInfo *)cp)->platform = platform;
+}
+
+void packet_set_os_version(Packet *cp, const char *os_version)
+{
+    assert(cp);
+    if (cp->type == PACKET_TYPE_USERINFO)
+        ((struct PacketUserInfo *)cp)->os_version = os_version;
+}
+
+void packet_set_app_version(Packet *cp, const char *app_version)
+{
+    assert(cp);
+    if (cp->type == PACKET_TYPE_USERINFO)
+        ((struct PacketUserInfo *)cp)->app_version = app_version;
 }
 
 bool packet_get_has_avatar(Packet *cp)
@@ -854,6 +921,22 @@ uint8_t *packet_encode(Packet *cp, size_t *encoded_len)
         str = flatcc_builder_create_string_str(&builder, pktinfo->region);
         carrier_userinfo_region_add(&builder, str);
         carrier_userinfo_avatar_add(&builder, pktinfo->has_avatar);
+        /* AgentNet client metadata (appended fields). Only emit non-empty
+         * values so an all-legacy profile stays byte-compatible. */
+        if (pktinfo->proto_version)
+            carrier_userinfo_proto_version_add(&builder, pktinfo->proto_version);
+        if (pktinfo->platform && *pktinfo->platform) {
+            str = flatcc_builder_create_string_str(&builder, pktinfo->platform);
+            carrier_userinfo_platform_add(&builder, str);
+        }
+        if (pktinfo->os_version && *pktinfo->os_version) {
+            str = flatcc_builder_create_string_str(&builder, pktinfo->os_version);
+            carrier_userinfo_os_version_add(&builder, str);
+        }
+        if (pktinfo->app_version && *pktinfo->app_version) {
+            str = flatcc_builder_create_string_str(&builder, pktinfo->app_version);
+            carrier_userinfo_app_version_add(&builder, str);
+        }
         ref = carrier_userinfo_end(&builder);
         break;
 
@@ -1032,6 +1115,15 @@ Packet *packet_decode(const uint8_t *data, size_t len)
         pktinfo->email  = carrier_userinfo_email(tblinfo);
         pktinfo->region = carrier_userinfo_region(tblinfo);
         pktinfo->has_avatar = carrier_userinfo_avatar(tblinfo);
+        /* AgentNet client metadata (appended fields; absent => default for a
+         * legacy peer). proto_version has a default of 0 in the schema. */
+        pktinfo->proto_version = carrier_userinfo_proto_version(tblinfo);
+        if (carrier_userinfo_platform_is_present(tblinfo))
+            pktinfo->platform = carrier_userinfo_platform(tblinfo);
+        if (carrier_userinfo_os_version_is_present(tblinfo))
+            pktinfo->os_version = carrier_userinfo_os_version(tblinfo);
+        if (carrier_userinfo_app_version_is_present(tblinfo))
+            pktinfo->app_version = carrier_userinfo_app_version(tblinfo);
         break;
 
     case PACKET_TYPE_FRIEND_REQUEST:
