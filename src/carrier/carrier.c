@@ -1533,7 +1533,7 @@ redo_check:
         CarrierReceiptState state;
         char *userid;
         char *ext_name;
-        char *addr;
+        char addr[CARRIER_MAX_ID_LEN + 1];
         int rc;
 
         rc = unconfirmed_iterator_next(&it, &item);
@@ -1542,8 +1542,14 @@ redo_check:
         else if (rc == -1)
             goto redo_check;
 
-        addr = (char *)alloca(strlen(item->to) + 1);
-        strcpy(addr, item->to);
+        /* `to` is a fixed-size field, so a plain local buffer holds it.
+         * alloca() here leaked a frame's worth of stack per iteration -- it is
+         * only released when the enclosing function returns, and `redo_check`
+         * restarts the walk without returning, so a backlog of unconfirmed
+         * messages (express delivery failing) overflowed the carrier thread's
+         * stack inside do_friend_connections. */
+        strncpy(addr, item->to, sizeof(addr) - 1);
+        addr[sizeof(addr) - 1] = '\0';
         parse_address(addr, &userid, &ext_name);
 
         if (strcmp(friendid, userid) || item->offline_sending) {
@@ -1750,7 +1756,7 @@ redo_check:
         CarrierReceiptState state;
         char *userid;
         char *ext_name;
-        char *addr;
+        char addr[CARRIER_MAX_ID_LEN + 1];
         int rc;
 
         rc = unconfirmed_iterator_next(&it, &item);
@@ -1759,8 +1765,14 @@ redo_check:
         else if (rc == -1)
             goto redo_check;
 
-        addr = (char *)alloca(strlen(item->to) + 1);
-        strcpy(addr, item->to);
+        /* `to` is a fixed-size field, so a plain local buffer holds it.
+         * alloca() here leaked a frame's worth of stack per iteration -- it is
+         * only released when the enclosing function returns, and `redo_check`
+         * restarts the walk without returning, so a backlog of unconfirmed
+         * messages (express delivery failing) overflowed the carrier thread's
+         * stack inside do_friend_connections. */
+        strncpy(addr, item->to, sizeof(addr) - 1);
+        addr[sizeof(addr) - 1] = '\0';
         parse_address(addr, &userid, &ext_name);
 
         if (strcmp(ev->fi.user_info.userid, userid)) {
