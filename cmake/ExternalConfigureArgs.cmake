@@ -33,10 +33,20 @@ if(${CMAKE_CROSSCOMPILING})
     endif()
 
     if(IOS)
-        execute_process(COMMAND gcc -dumpmachine
-            OUTPUT_VARIABLE _XDK_HOST
-            ERROR_QUIET
-            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        # Note: `gcc -dumpmachine` reports "arm64-apple-darwin<ver>" on Apple
+        # Silicon hosts, a triple the vendored (pre-arm64) config.sub scripts of
+        # some autotools dependencies reject outright. Derive the host triple
+        # from the actual target architecture instead.
+        if("${IOS_ARCH}" STREQUAL "arm64")
+            set(_XDK_HOST "aarch64-apple-darwin")
+        elseif("${IOS_ARCH}" STREQUAL "x86_64")
+            set(_XDK_HOST "x86_64-apple-darwin")
+        else()
+            execute_process(COMMAND gcc -dumpmachine
+                OUTPUT_VARIABLE _XDK_HOST
+                ERROR_QUIET
+                OUTPUT_STRIP_TRAILING_WHITESPACE)
+        endif()
 
         # Cross compilation toolchains
         set(XDK_HOST ${_XDK_HOST})
