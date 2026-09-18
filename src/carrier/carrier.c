@@ -249,7 +249,8 @@ static const char *default_platform(void)
 /* AgentNet: client metadata + profile extension on an outgoing userinfo. */
 static void apply_self_ext_to_packet(Carrier *w, Packet *cp)
 {
-    packet_set_proto_version(cp, CARRIER_AGENTNET_PROTO_VERSION);
+    packet_set_proto_version(cp, w->me_client.proto_version >= CARRIER_AGENTNET_PROTO_VERSION
+                                 ? w->me_client.proto_version : CARRIER_AGENTNET_PROTO_VERSION);
     packet_set_platform(cp, *w->me_client.platform ? w->me_client.platform
                                                    : default_platform());
     packet_set_os_version(cp, w->me_client.os_version);
@@ -452,9 +453,10 @@ static void get_self_info_cb(const uint8_t *address, const uint8_t *public_key,
     /* Always advertise this build's protocol version and platform, whatever
      * an older build stored. */
     if (desc_len == 0 ||
-        w->me_client.proto_version != CARRIER_AGENTNET_PROTO_VERSION ||
+        w->me_client.proto_version < CARRIER_AGENTNET_PROTO_VERSION ||
         !*w->me_client.platform) {
-        w->me_client.proto_version = CARRIER_AGENTNET_PROTO_VERSION;
+        if (w->me_client.proto_version < CARRIER_AGENTNET_PROTO_VERSION)
+            w->me_client.proto_version = CARRIER_AGENTNET_PROTO_VERSION;
         if (!*w->me_client.platform)
             strncpy(w->me_client.platform, default_platform(),
                     sizeof(w->me_client.platform) - 1);
@@ -2920,7 +2922,8 @@ int carrier_set_client_info(Carrier *w, const CarrierClientInfo *info)
     }
 
     w->me_client = *info;
-    w->me_client.proto_version = CARRIER_AGENTNET_PROTO_VERSION;
+    if (w->me_client.proto_version < CARRIER_AGENTNET_PROTO_VERSION)
+        w->me_client.proto_version = CARRIER_AGENTNET_PROTO_VERSION;
     if (!*w->me_client.platform)
         strncpy(w->me_client.platform, default_platform(),
                 sizeof(w->me_client.platform) - 1);

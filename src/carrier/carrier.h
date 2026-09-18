@@ -145,13 +145,24 @@ extern "C" {
 #define CARRIER_LEGACY_MAX_APP_BULKMSG_LEN (5 * 1024 * 1024)
 
 /**
- * AgentNet wire-protocol version this SDK advertises in its userinfo.
- *  0 — legacy Carrier: no client metadata
- *  1 — client metadata; 16 MB bulk messages; JS peer >= 0.1.87
- *  2 — identity signatures (XEdDSA), profile extension (avatar_url, url,
- *      ens, extra), sender-side receipt timeout -> Express
+ * AgentNet wire-protocol version, as defined by the JavaScript peer
+ * (@decentnetwork/peer, AGENTNET_PROTO_VERSION):
+ *  0 — legacy Carrier: no client metadata, 5 MB bulk cap
+ *  1 — client metadata; 16 MB bulk messages; toxcore file-transfer channel
+ *  2 — the APPLICATION answers text delivery ACKs (the DNPACK1 envelope):
+ *      a peer that sees 2 keeps re-sending a text until the app acknowledges.
+ *
+ * The SDK by itself guarantees 1 and advertises that. Version 2 is an app
+ * capability: an app that implements the ACK sets it through
+ * carrier_set_client_info(); one that does not must leave it at 1, or every
+ * JS peer will retransmit each text to it for minutes.
+ *
+ * The SDK's own additions (identity signatures, the profile extension, the
+ * receipt timeout) need no version: signatures are verified by anyone, the
+ * profile fields are self-describing, the timeout is sender-side.
  */
-#define CARRIER_AGENTNET_PROTO_VERSION      2
+#define CARRIER_AGENTNET_PROTO_VERSION      1
+#define CARRIER_AGENTNET_PROTO_VERSION_APP_ACK 2
 
 /** Seconds without a transport receipt before a message is re-sent through Express. */
 #define CARRIER_RECEIPT_TIMEOUT_SECONDS     30
@@ -1130,9 +1141,10 @@ char *carrier_get_userid(Carrier *carrier, char *userid, size_t len);
  */
 /**
  * \~English
- * Set what this client advertises to friends: platform, OS and app version.
- * proto_version is always CARRIER_AGENTNET_PROTO_VERSION regardless of the
- * value passed. Re-publishes the userinfo. Call once after carrier_new().
+ * Set what this client advertises to friends: platform, OS and app version,
+ * and the protocol version the APP implements (0 or below the SDK's own
+ * CARRIER_AGENTNET_PROTO_VERSION means the SDK's; 2 only if the app answers
+ * DNPACK1 text ACKs). Re-publishes the userinfo. Call once after carrier_new().
  */
 CARRIER_API
 int carrier_set_client_info(Carrier *carrier, const CarrierClientInfo *info);

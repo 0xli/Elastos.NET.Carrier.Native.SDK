@@ -53,7 +53,7 @@ recurring profile exchange, so it is the natural carrier for client metadata.
 
 ### Done in proto v2 (2026-09-18)
 
-`carrier.c` now populates `proto_version = CARRIER_AGENTNET_PROTO_VERSION` (2),
+`carrier.c` now populates `proto_version` (the SDK's 1, or what the app set),
 `platform` (compile-time default: ios / darwin / android / linux / win32, or
 what the app set) and `os_version` / `app_version` on every outgoing userinfo,
 and keeps a friend's values: `carrier_get_friend_client_info()`. An app sets
@@ -144,8 +144,12 @@ peer's advertised `proto_version` (§1): reserve `proto_version >= 2` for
 
 ## 3. Proto v2 (2026-09-18): signatures, profile extension, receipt timeout
 
-`CARRIER_AGENTNET_PROTO_VERSION` is **2**. Everything is additive; a v0/v1 peer
-keeps working.
+The SDK advertises `CARRIER_AGENTNET_PROTO_VERSION` = **1** by itself. The number
+follows the JavaScript peer's definition: 0 legacy, 1 client metadata + 16 MB
+bulk, **2 = the application answers DNPACK1 text delivery ACKs**. 2 is set by an
+app that implements the ACK (`carrier_set_client_info`), never by the SDK — a
+peer that sees 2 keeps re-sending each text until the app acknowledges. The
+additions below need no version: they are detected by presence.
 
 | | |
 |---|---|

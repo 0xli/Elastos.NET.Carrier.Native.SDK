@@ -122,7 +122,13 @@ static void test_carrier_api(const char *sig_out_path)
     CHECK(carrier_set_client_info(w, &ci2) == 0, "set client info");
     CHECK(carrier_get_client_info(w, &ci) == 0 && !strcmp(ci.platform, "ios") &&
           !strcmp(ci.app_version, "beagle-1.8.28") && ci.proto_version == CARRIER_AGENTNET_PROTO_VERSION,
-          "client info round-trips, version forced");
+          "client info round-trips, version defaults to the SDK's");
+    ci2.proto_version = CARRIER_AGENTNET_PROTO_VERSION_APP_ACK;
+    CHECK(carrier_set_client_info(w, &ci2) == 0 && carrier_get_client_info(w, &ci) == 0 &&
+          ci.proto_version == CARRIER_AGENTNET_PROTO_VERSION_APP_ACK, "an app that answers ACKs may advertise 2");
+    ci2.proto_version = 0;
+    CHECK(carrier_set_client_info(w, &ci2) == 0 && carrier_get_client_info(w, &ci) == 0 &&
+          ci.proto_version == CARRIER_AGENTNET_PROTO_VERSION, "0 means the SDK's version");
 
     memset(&ext, 0, sizeof(ext));
     strcpy(ext.avatar_url, "https://example.invalid/a.png");
