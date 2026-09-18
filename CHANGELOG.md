@@ -1,3 +1,12 @@
+## AgentNet proto v2 (2026-09-18)
+
+- `carrier_identity_sign` / `carrier_identity_verify` (XEdDSA, JS-compatible), `carrier_export_secret_key`
+- userinfo: `avatar_url`, `url`, `ens`, `extra`; `carrier_set/get_self_profile_ext`, `carrier_get_friend_profile_ext`
+- client metadata now sent and surfaced: `carrier_set/get_client_info`, `carrier_get_friend_client_info`; `CARRIER_AGENTNET_PROTO_VERSION` = 2
+- unconfirmed messages fall back to Express after 30 s (`do_unconfirmed_expire`); Express HTTP timeout 15 s
+- bulk messages over 5 MB refused toward legacy (proto 0) peers
+- `tests/unit/identity_test` (`-DENABLE_UNIT_TESTS=ON`), vectors from curve25519-js
+
 03/02/2019 Tang Zhilong stiartsly@gmail.com
 
 **version 5.2.2**, main changes to previous version:

@@ -62,6 +62,7 @@ configure_file(
 set(SRC
     dht/dht.c
     packet.c
+    xeddsa.c
     carrier.c
     carrier_error.c
     carrier_extension.c

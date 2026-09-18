@@ -110,6 +110,16 @@ void packet_set_proto_version(Packet *packet, uint32_t proto_version);
 
 void packet_set_platform(Packet *packet, const char *platform);
 
+/* AgentNet profile extension (userinfo, proto_version >= 2). */
+const char *packet_get_avatar_url(Packet *packet);
+const char *packet_get_url(Packet *packet);
+const char *packet_get_ens(Packet *packet);
+const char *packet_get_extra(Packet *packet);
+void packet_set_avatar_url(Packet *packet, const char *avatar_url);
+void packet_set_url(Packet *packet, const char *url);
+void packet_set_ens(Packet *packet, const char *ens);
+void packet_set_extra(Packet *packet, const char *extra);
+
 void packet_set_os_version(Packet *packet, const char *os_version);
 
 void packet_set_app_version(Packet *packet, const char *app_version);

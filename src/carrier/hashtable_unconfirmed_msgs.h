@@ -32,6 +32,9 @@ typedef struct UnconfirmedMsg {
     char to[CARRIER_MAX_ID_LEN + 1];
     uint32_t msgid;
     int offline_sending;
+    /* When no transport receipt has arrived by this time, the message is
+     * re-sent through Express as if the friend had gone offline. */
+    struct timeval expire_at;
 
     CarrierFriendMessageReceiptCallback *callback;
     void *context;

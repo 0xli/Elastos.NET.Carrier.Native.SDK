@@ -41,6 +41,12 @@ table userinfo {
     platform      : string;   // "ios" | "android" | "js" | "darwin" | "linux" | "win32"
     os_version    : string;   // e.g. "17.5", "14", "node-24.2.0"
     app_version   : string;   // e.g. "beagle-2.3.1", "lan-0.1.167"
+    // AgentNet profile extension (proto_version >= 2). Pointers, never bytes:
+    // userinfo rides toxcore's status message (1007 bytes for the whole packet).
+    avatar_url    : string;   // https URL of an avatar image; the app fetches it
+    url           : string;   // a personal / site link
+    ens           : string;   // "<name>.beagles.eth" (display hint, not proof)
+    extra         : string;   // small JSON for forward growth
 }
 
 table friendreq {

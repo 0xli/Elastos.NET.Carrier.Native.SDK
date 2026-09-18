@@ -51,6 +51,11 @@ struct PacketUserInfo {
     const char *platform;
     const char *os_version;
     const char *app_version;
+    /* AgentNet profile extension (proto_version >= 2). */
+    const char *avatar_url;
+    const char *url;
+    const char *ens;
+    const char *extra;
 };
 
 struct PacketFriendReq {
@@ -350,6 +355,26 @@ const char *packet_get_app_version(Packet *cp)
         return ((struct PacketUserInfo *)cp)->app_version;
     return NULL;
 }
+
+#define USERINFO_STR_ACCESSOR(field)                                        \
+const char *packet_get_##field(Packet *cp)                                  \
+{                                                                           \
+    assert(cp);                                                             \
+    if (cp->type == PACKET_TYPE_USERINFO)                                   \
+        return ((struct PacketUserInfo *)cp)->field;                        \
+    return NULL;                                                            \
+}                                                                           \
+void packet_set_##field(Packet *cp, const char *value)                      \
+{                                                                           \
+    assert(cp);                                                             \
+    if (cp->type == PACKET_TYPE_USERINFO)                                   \
+        ((struct PacketUserInfo *)cp)->field = value;                       \
+}
+
+USERINFO_STR_ACCESSOR(avatar_url)
+USERINFO_STR_ACCESSOR(url)
+USERINFO_STR_ACCESSOR(ens)
+USERINFO_STR_ACCESSOR(extra)
 
 void packet_set_proto_version(Packet *cp, uint32_t proto_version)
 {
@@ -937,6 +962,23 @@ uint8_t *packet_encode(Packet *cp, size_t *encoded_len)
             str = flatcc_builder_create_string_str(&builder, pktinfo->app_version);
             carrier_userinfo_app_version_add(&builder, str);
         }
+        /* Profile extension: same rule, only non-empty values are emitted. */
+        if (pktinfo->avatar_url && *pktinfo->avatar_url) {
+            str = flatcc_builder_create_string_str(&builder, pktinfo->avatar_url);
+            carrier_userinfo_avatar_url_add(&builder, str);
+        }
+        if (pktinfo->url && *pktinfo->url) {
+            str = flatcc_builder_create_string_str(&builder, pktinfo->url);
+            carrier_userinfo_url_add(&builder, str);
+        }
+        if (pktinfo->ens && *pktinfo->ens) {
+            str = flatcc_builder_create_string_str(&builder, pktinfo->ens);
+            carrier_userinfo_ens_add(&builder, str);
+        }
+        if (pktinfo->extra && *pktinfo->extra) {
+            str = flatcc_builder_create_string_str(&builder, pktinfo->extra);
+            carrier_userinfo_extra_add(&builder, str);
+        }
         ref = carrier_userinfo_end(&builder);
         break;
 
@@ -1124,6 +1166,14 @@ Packet *packet_decode(const uint8_t *data, size_t len)
             pktinfo->os_version = carrier_userinfo_os_version(tblinfo);
         if (carrier_userinfo_app_version_is_present(tblinfo))
             pktinfo->app_version = carrier_userinfo_app_version(tblinfo);
+        if (carrier_userinfo_avatar_url_is_present(tblinfo))
+            pktinfo->avatar_url = carrier_userinfo_avatar_url(tblinfo);
+        if (carrier_userinfo_url_is_present(tblinfo))
+            pktinfo->url = carrier_userinfo_url(tblinfo);
+        if (carrier_userinfo_ens_is_present(tblinfo))
+            pktinfo->ens = carrier_userinfo_ens(tblinfo);
+        if (carrier_userinfo_extra_is_present(tblinfo))
+            pktinfo->extra = carrier_userinfo_extra(tblinfo);
         break;
 
     case PACKET_TYPE_FRIEND_REQUEST:

@@ -49,6 +49,12 @@ if(ENABLE_TESTS)
     add_subdirectory(tests/offmsg)
 endif()
 
+if(ENABLE_UNIT_TESTS)
+    add_submodule(identity_test
+        DIRECTORY tests/unit
+        DEPENDS libcrystal carrier0)
+endif()
+
 if(ENABLE_DOCS AND (${CMAKE_SYSTEM_NAME} STREQUAL "Linux"))
     add_subdirectory(docs)
 endif()

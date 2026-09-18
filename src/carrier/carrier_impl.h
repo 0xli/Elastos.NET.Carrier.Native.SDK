@@ -116,6 +116,8 @@ struct Carrier {
     char base58_addr[CARRIER_MAX_ADDRESS_LEN + 1];
 
     CarrierUserInfo me;
+    CarrierClientInfo me_client;
+    CarrierProfileExt me_ext;
     CarrierPresenceStatus presence_status;
     CarrierConnectionStatus connection_status;
     bool is_ready;
@@ -132,6 +134,7 @@ struct Carrier {
     ExpressConnector *connector;
     uint32_t offmsgid;
     struct timeval express_expiretime;
+    struct timeval unconfirmed_expiretime;
 
     linked_hashtable_t *tcallbacks;
     linked_hashtable_t *thistory;

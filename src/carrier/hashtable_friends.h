@@ -34,6 +34,9 @@ typedef struct FriendInfo {
 
     uint32_t friend_number;
     CarrierFriendInfo info;
+    /* AgentNet: what the friend's client advertised in its userinfo. */
+    CarrierClientInfo client;
+    CarrierProfileExt ext;
 } FriendInfo;
 
 static

@@ -82,6 +82,10 @@
 #include "packet.h"
 #include "dht.h"
 #include "express.h"
+#include "xeddsa.h"
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 
 #define TASSEMBLY_TIMEOUT               (60) //60s.
 
@@ -223,7 +227,42 @@ int get_friend_number(Carrier *w, const char *friendid, uint32_t *friend_number)
     return rc;
 }
 
-static void fill_empty_user_descr(Carrier *w)
+static const char *default_platform(void)
+{
+#if defined(__ANDROID__)
+    return "android";
+#elif defined(__APPLE__)
+#if TARGET_OS_IPHONE
+    return "ios";
+#else
+    return "darwin";
+#endif
+#elif defined(_WIN32)
+    return "win32";
+#elif defined(__linux__)
+    return "linux";
+#else
+    return "unknown";
+#endif
+}
+
+/* AgentNet: client metadata + profile extension on an outgoing userinfo. */
+static void apply_self_ext_to_packet(Carrier *w, Packet *cp)
+{
+    packet_set_proto_version(cp, CARRIER_AGENTNET_PROTO_VERSION);
+    packet_set_platform(cp, *w->me_client.platform ? w->me_client.platform
+                                                   : default_platform());
+    packet_set_os_version(cp, w->me_client.os_version);
+    packet_set_app_version(cp, w->me_client.app_version);
+    packet_set_avatar_url(cp, w->me_ext.avatar_url);
+    packet_set_url(cp, w->me_ext.url);
+    packet_set_ens(cp, w->me_ext.ens);
+    packet_set_extra(cp, w->me_ext.extra);
+}
+
+/* Encode w->me (+ client metadata + profile extension) and hand it to the
+ * DHT as our status message. Returns 0 or a carrier error code. */
+static int publish_self_desc(Carrier *w)
 {
     Packet *cp;
     uint8_t *data;
@@ -232,34 +271,45 @@ static void fill_empty_user_descr(Carrier *w)
     assert(w);
 
     cp = packet_create(PACKET_TYPE_USERINFO, NULL);
-    if (!cp) {
-        vlogE("Carrier: Out of memory!!!");
-        return;
-    }
+    if (!cp)
+        return CARRIER_GENERAL_ERROR(ERROR_OUT_OF_MEMORY);
 
-    packet_set_has_avatar(cp, false);
-    packet_set_name(cp, "");
-    packet_set_descr(cp, "");
-    packet_set_gender(cp, "");
-    packet_set_phone(cp, "");
-    packet_set_email(cp, "");
-    packet_set_region(cp, "");
+    packet_set_has_avatar(cp, !!w->me.has_avatar);
+    packet_set_name(cp, w->me.name);
+    packet_set_descr(cp, w->me.description);
+    packet_set_gender(cp, w->me.gender);
+    packet_set_phone(cp, w->me.phone);
+    packet_set_email(cp, w->me.email);
+    packet_set_region(cp, w->me.region);
+    apply_self_ext_to_packet(w, cp);
 
     data = packet_encode(cp, &data_len);
     packet_free(cp);
+    if (!data)
+        return CARRIER_GENERAL_ERROR(ERROR_OUT_OF_MEMORY);
 
-    if (!data) {
-        vlogE("Carrier: Encode user desc to packet error");
-        return;
+    if (data_len > CARRIER_MAX_USERINFO_PACKET_LEN) {
+        vlogE("Carrier: userinfo is %zu bytes, over the %d-byte status message limit",
+              data_len, CARRIER_MAX_USERINFO_PACKET_LEN);
+        free(data);
+        return CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS);
     }
 
     dht_self_set_desc(&w->dht, data, data_len);
     free(data);
+    return 0;
+}
+
+static void fill_empty_user_descr(Carrier *w)
+{
+    int rc = publish_self_desc(w);
+    if (rc < 0)
+        vlogE("Carrier: Encode user desc to packet error (%x)", rc);
 }
 
 static
 int unpack_user_descr(const uint8_t *desc, size_t desc_len, CarrierUserInfo *info,
-                     bool *changed)
+                     bool *changed, CarrierClientInfo *client, CarrierProfileExt *ext)
 {
     Packet *cp;
     const char *name;
@@ -329,6 +379,34 @@ int unpack_user_descr(const uint8_t *desc, size_t desc_len, CarrierUserInfo *inf
         did_changed = true;
     }
 
+    /* AgentNet fields. Absent on a legacy peer -> defaults (0 / empty). */
+#define TAKE_STR(dst, getter)                                            \
+    do {                                                                 \
+        const char *v_ = getter(cp) ? getter(cp) : "";                   \
+        if (strncmp(dst, v_, sizeof(dst) - 1)) {                         \
+            strncpy(dst, v_, sizeof(dst) - 1);                           \
+            dst[sizeof(dst) - 1] = '\0';                                 \
+            did_changed = true;                                          \
+        }                                                                \
+    } while (0)
+    if (client) {
+        uint32_t v = packet_get_proto_version(cp);
+        if (client->proto_version != v) {
+            client->proto_version = v;
+            did_changed = true;
+        }
+        TAKE_STR(client->platform, packet_get_platform);
+        TAKE_STR(client->os_version, packet_get_os_version);
+        TAKE_STR(client->app_version, packet_get_app_version);
+    }
+    if (ext) {
+        TAKE_STR(ext->avatar_url, packet_get_avatar_url);
+        TAKE_STR(ext->url, packet_get_url);
+        TAKE_STR(ext->ens, packet_get_ens);
+        TAKE_STR(ext->extra, packet_get_extra);
+    }
+#undef TAKE_STR
+
     packet_free(cp);
 
     if (changed)
@@ -369,9 +447,19 @@ static void get_self_info_cb(const uint8_t *address, const uint8_t *public_key,
     w->presence_status = normalize_presence_status(user_status);
 
     if (desc_len > 0)
-        unpack_user_descr(desc, desc_len, ui, NULL);
-    else
+        unpack_user_descr(desc, desc_len, ui, NULL, &w->me_client, &w->me_ext);
+
+    /* Always advertise this build's protocol version and platform, whatever
+     * an older build stored. */
+    if (desc_len == 0 ||
+        w->me_client.proto_version != CARRIER_AGENTNET_PROTO_VERSION ||
+        !*w->me_client.platform) {
+        w->me_client.proto_version = CARRIER_AGENTNET_PROTO_VERSION;
+        if (!*w->me_client.platform)
+            strncpy(w->me_client.platform, default_platform(),
+                    sizeof(w->me_client.platform) - 1);
         fill_empty_user_descr(w);
+    }
 
     name_len = dht_self_get_name(&w->dht, (uint8_t *)dht_name,
                                  sizeof(dht_name));
@@ -407,7 +495,7 @@ static bool friends_iterate_cb(uint32_t friend_number,
     base58_encode(public_key, DHT_PUBLIC_KEY_SIZE, ui->userid, &_len);
 
     if (descr_len > 0)
-        rc = unpack_user_descr(descr, descr_len, ui, NULL);
+        rc = unpack_user_descr(descr, descr_len, ui, NULL, &fi->client, &fi->ext);
     else
         rc = 0;
 
@@ -1495,7 +1583,8 @@ void notify_friend_description_cb(uint32_t friend_number, const uint8_t *descr,
         return;
     }
 
-    unpack_user_descr(descr, length, &fi->info.user_info, &changed);
+    unpack_user_descr(descr, length, &fi->info.user_info, &changed,
+                      &fi->client, &fi->ext);
     if (!changed) {
         deref(fi);
         return;
@@ -1937,6 +2026,63 @@ redo_exipre:
         if (timercmp(&now, &item->expire_time, >))
             bulkmsgs_iterator_remove(&it);
 
+        deref(item);
+    }
+}
+
+/* A friend that still pings but never acknowledges (a session that looks
+ * alive and hears nothing) would otherwise hold a message for ever: the core
+ * only re-routed to Express when the friend's connection dropped. Once a
+ * second, hand every unconfirmed message past its deadline to Express, the
+ * same way notify_friend_connection() does on disconnect. */
+static void do_unconfirmed_expire(Carrier *w)
+{
+    linked_hashtable_iterator_t it;
+    struct timeval now;
+
+    gettimeofday(&now, NULL);
+    if (timercmp(&now, &w->unconfirmed_expiretime, <))
+        return;
+    gettimeofday_elapsed(&w->unconfirmed_expiretime, 1);
+
+redo_check:
+    unconfirmed_iterate(w->unconfirmed, &it);
+    while (unconfirmed_iterator_has_next(&it)) {
+        UnconfirmedMsg *item;
+        char addr[CARRIER_MAX_ID_LEN + 1];
+        char *userid;
+        char *ext_name;
+        int rc;
+
+        rc = unconfirmed_iterator_next(&it, &item);
+        if (rc == 0)
+            break;
+        else if (rc == -1)
+            goto redo_check;
+
+        if (item->offline_sending || timercmp(&now, &item->expire_at, <)) {
+            deref(item);
+            continue;
+        }
+
+        strncpy(addr, item->to, sizeof(addr) - 1);
+        addr[sizeof(addr) - 1] = '\0';
+        parse_address(addr, &userid, &ext_name);
+
+        vlogI("Carrier: No receipt for message %u to %s within %ds, resend as offline sending",
+              item->msgid, userid, CARRIER_RECEIPT_TIMEOUT_SECONDS);
+
+        rc = w->connector ? send_express_message(w, userid, item->msgid,
+                                                 item->data, item->size, ext_name) : -1;
+        if (rc < 0) {
+            unconfirmed_iterator_remove(&it);
+            if (item->callback)
+                item->callback(item->msgid, CarrierReceipt_Error, item->context);
+            deref(item);
+            continue;
+        }
+
+        item->offline_sending = true;
         deref(item);
     }
 }
@@ -2700,6 +2846,7 @@ int carrier_run(Carrier *w, int interval)
         do_transacted_callabcks_expire(w);
         do_bulkmsgs_expire(w->bulkmsgs);
         do_express_expire(w);
+        do_unconfirmed_expire(w);
 
         if (idle_interval > 0)
             notify_idle(w);
@@ -2758,6 +2905,174 @@ char *carrier_get_nodeid(Carrier *w, char *nodeid, size_t len)
 char *carrier_get_userid(Carrier *w, char *userid, size_t len)
 {
     return carrier_get_nodeid(w, userid, len);
+}
+
+int carrier_set_client_info(Carrier *w, const CarrierClientInfo *info)
+{
+    int rc;
+
+    if (!w || !info ||
+        strlen(info->platform) > CARRIER_MAX_PLATFORM_LEN ||
+        strlen(info->os_version) > CARRIER_MAX_OS_VERSION_LEN ||
+        strlen(info->app_version) > CARRIER_MAX_APP_VERSION_LEN) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
+        return -1;
+    }
+
+    w->me_client = *info;
+    w->me_client.proto_version = CARRIER_AGENTNET_PROTO_VERSION;
+    if (!*w->me_client.platform)
+        strncpy(w->me_client.platform, default_platform(),
+                sizeof(w->me_client.platform) - 1);
+
+    rc = publish_self_desc(w);
+    if (rc < 0) {
+        carrier_set_error(rc);
+        return -1;
+    }
+    store_persistence_data(w);
+    return 0;
+}
+
+int carrier_get_client_info(Carrier *w, CarrierClientInfo *info)
+{
+    if (!w || !info) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
+        return -1;
+    }
+    *info = w->me_client;
+    return 0;
+}
+
+static FriendInfo *lookup_friend(Carrier *w, const char *friendid)
+{
+    uint32_t friend_number;
+    FriendInfo *fi;
+    int rc;
+
+    rc = get_friend_number(w, friendid, &friend_number);
+    if (rc < 0) {
+        carrier_set_error(rc);
+        return NULL;
+    }
+    fi = friends_get(w->friends, friend_number);
+    if (!fi)
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_NOT_EXIST));
+    return fi;
+}
+
+int carrier_get_friend_client_info(Carrier *w, const char *friendid,
+                                   CarrierClientInfo *info)
+{
+    FriendInfo *fi;
+
+    if (!w || !friendid || !*friendid || !info) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
+        return -1;
+    }
+    fi = lookup_friend(w, friendid);
+    if (!fi)
+        return -1;
+    *info = fi->client;
+    deref(fi);
+    return 0;
+}
+
+int carrier_set_self_profile_ext(Carrier *w, const CarrierProfileExt *ext)
+{
+    CarrierProfileExt previous;
+    int rc;
+
+    if (!w || !ext ||
+        strlen(ext->avatar_url) > CARRIER_MAX_AVATAR_URL_LEN ||
+        strlen(ext->url) > CARRIER_MAX_URL_LEN ||
+        strlen(ext->ens) > CARRIER_MAX_ENS_LEN ||
+        strlen(ext->extra) > CARRIER_MAX_PROFILE_EXTRA_LEN) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
+        return -1;
+    }
+
+    previous = w->me_ext;
+    w->me_ext = *ext;
+    rc = publish_self_desc(w);
+    if (rc < 0) {
+        w->me_ext = previous;
+        carrier_set_error(rc);
+        return -1;
+    }
+    store_persistence_data(w);
+    return 0;
+}
+
+int carrier_get_self_profile_ext(Carrier *w, CarrierProfileExt *ext)
+{
+    if (!w || !ext) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
+        return -1;
+    }
+    *ext = w->me_ext;
+    return 0;
+}
+
+int carrier_get_friend_profile_ext(Carrier *w, const char *friendid,
+                                   CarrierProfileExt *ext)
+{
+    FriendInfo *fi;
+
+    if (!w || !friendid || !*friendid || !ext) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
+        return -1;
+    }
+    fi = lookup_friend(w, friendid);
+    if (!fi)
+        return -1;
+    *ext = fi->ext;
+    deref(fi);
+    return 0;
+}
+
+int carrier_identity_sign(Carrier *w, const uint8_t *message, size_t length,
+                          uint8_t signature[CARRIER_IDENTITY_SIGNATURE_BYTES])
+{
+    uint8_t secret[CARRIER_IDENTITY_SECRET_BYTES];
+    int rc;
+
+    if (!w || !message || length == 0 || !signature) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
+        return -1;
+    }
+
+    dht_self_get_secret_key(&w->dht, secret);
+    rc = xeddsa_sign(signature, secret, message, length, NULL);
+    sodium_memzero(secret, sizeof(secret));
+    if (rc < 0) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_ENCRYPT));
+        return -1;
+    }
+    return 0;
+}
+
+int carrier_identity_verify(const char *userid, const uint8_t *message, size_t length,
+                            const uint8_t signature[CARRIER_IDENTITY_SIGNATURE_BYTES])
+{
+    uint8_t pk[DHT_PUBLIC_KEY_SIZE];
+
+    if (!userid || !*userid || !message || length == 0 || !signature ||
+        base58_decode(userid, strlen(userid), pk, sizeof(pk)) != DHT_PUBLIC_KEY_SIZE) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
+        return -1;
+    }
+    return xeddsa_verify(pk, message, length, signature);
+}
+
+int carrier_export_secret_key(Carrier *w, uint8_t secret[CARRIER_IDENTITY_SECRET_BYTES])
+{
+    if (!w || !secret) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
+        return -1;
+    }
+    dht_self_get_secret_key(&w->dht, secret);
+    return 0;
 }
 
 int carrier_identity_create_auth_proof(
@@ -2893,12 +3208,19 @@ int carrier_set_self_info(Carrier *w, const CarrierUserInfo *info)
         packet_set_phone(cp, info->phone);
         packet_set_email(cp, info->email);
         packet_set_region(cp, info->region);
+        apply_self_ext_to_packet(w, cp);
 
         data = packet_encode(cp, &data_len);
         packet_free(cp);
 
         if (!data) {
             carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_OUT_OF_MEMORY));
+            return -1;
+        }
+
+        if (data_len > CARRIER_MAX_USERINFO_PACKET_LEN) {
+            free(data);
+            carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
             return -1;
         }
 
@@ -3515,6 +3837,17 @@ static int send_friend_message_internal(Carrier *w, const char *to,
     }
 
     online = (fi->info.status == CarrierConnectionStatus_Connected);
+
+    /* A legacy peer drops a bulk message over its own 5 MB cap without a
+     * word; refuse here instead so the caller can shrink or split it. */
+    if (len > CARRIER_LEGACY_MAX_APP_BULKMSG_LEN &&
+        fi->client.proto_version < 1) {
+        vlogW("Carrier: %zu-byte message refused: friend %s is a legacy peer (5 MB cap)",
+              len, userid);
+        deref(fi);
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
+        return -1;
+    }
     deref(fi);
 
     if (online) {
@@ -3724,6 +4057,7 @@ int send_message_with_receipt_internal(Carrier *w, const char *to,
     item->size     = len;
     item->msgid    = _msgid;
     item->offline_sending = 0;
+    gettimeofday_elapsed(&item->expire_at, CARRIER_RECEIPT_TIMEOUT_SECONDS);
     memcpy(item->data, msg, len);
 
     unconfirmed_put(w->unconfirmed, item);
