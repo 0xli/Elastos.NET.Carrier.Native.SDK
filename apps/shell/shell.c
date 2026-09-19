@@ -535,6 +535,119 @@ static void get_userid(Carrier *w, int argc, char *argv[])
     output("User ID: %s\n", id);
 }
 
+/* ---- AgentNet proto v2: identity signatures, key export, profile ---- */
+
+static void hex_out(const uint8_t *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++) output("%02x", b[i]);
+}
+
+static int hex_in(const char *hex, uint8_t *out, size_t n)
+{
+    if (strlen(hex) != n * 2) return -1;
+    for (size_t i = 0; i < n; i++) {
+        unsigned v;
+        if (sscanf(hex + 2 * i, "%2x", &v) != 1) return -1;
+        out[i] = (uint8_t)v;
+    }
+    return 0;
+}
+
+static void identity_sign(Carrier *w, int argc, char *argv[])
+{
+    uint8_t sig[CARRIER_IDENTITY_SIGNATURE_BYTES];
+    if (argc != 2) { output("Invalid command syntax.\n"); return; }
+    if (carrier_identity_sign(w, (const uint8_t *)argv[1], strlen(argv[1]), sig) < 0) {
+        output("sign error (0x%x)\n", carrier_get_error());
+        return;
+    }
+    output("signature: "); hex_out(sig, sizeof(sig)); output("\n");
+}
+
+static void identity_verify(Carrier *w, int argc, char *argv[])
+{
+    uint8_t sig[CARRIER_IDENTITY_SIGNATURE_BYTES];
+    int rc;
+    (void)w;
+    if (argc != 4 || hex_in(argv[3], sig, sizeof(sig)) < 0) {
+        output("Invalid command syntax.\n");
+        return;
+    }
+    rc = carrier_identity_verify(argv[1], (const uint8_t *)argv[2], strlen(argv[2]), sig);
+    output(rc == 1 ? "valid\n" : rc == 0 ? "INVALID\n" : "error (0x%x)\n", carrier_get_error());
+}
+
+static void identity_export(Carrier *w, int argc, char *argv[])
+{
+    uint8_t secret[CARRIER_IDENTITY_SECRET_BYTES];
+    if (argc != 2 || strcmp(argv[1], "yes")) {
+        output("exportkey yes - prints this identity's secret key. Keep it secret.\n");
+        return;
+    }
+    if (carrier_export_secret_key(w, secret) < 0) {
+        output("export error (0x%x)\n", carrier_get_error());
+        return;
+    }
+    output("secret key: "); hex_out(secret, sizeof(secret)); output("\n");
+    memset(secret, 0, sizeof(secret));
+}
+
+static void client_info(Carrier *w, int argc, char *argv[])
+{
+    CarrierClientInfo ci;
+    if (argc == 1) {
+        if (carrier_get_client_info(w, &ci) < 0) { output("error (0x%x)\n", carrier_get_error()); return; }
+        output("proto_version: %u\nplatform: %s\nos_version: %s\napp_version: %s\n",
+               ci.proto_version, ci.platform, ci.os_version, ci.app_version);
+        return;
+    }
+    if (argc == 2) {
+        if (carrier_get_friend_client_info(w, argv[1], &ci) < 0) { output("error (0x%x)\n", carrier_get_error()); return; }
+        output("friend %s: proto_version %u platform %s os %s app %s\n",
+               argv[1], ci.proto_version, ci.platform, ci.os_version, ci.app_version);
+        return;
+    }
+    if (argc == 5) {
+        memset(&ci, 0, sizeof(ci));
+        ci.proto_version = (uint32_t)atoi(argv[1]);
+        strncpy(ci.platform, argv[2], sizeof(ci.platform) - 1);
+        strncpy(ci.os_version, argv[3], sizeof(ci.os_version) - 1);
+        strncpy(ci.app_version, argv[4], sizeof(ci.app_version) - 1);
+        if (carrier_set_client_info(w, &ci) < 0) output("error (0x%x)\n", carrier_get_error());
+        else output("ok\n");
+        return;
+    }
+    output("Invalid command syntax.\n");
+}
+
+static void profile_ext(Carrier *w, int argc, char *argv[])
+{
+    CarrierProfileExt ext;
+    if (argc == 1) {
+        if (carrier_get_self_profile_ext(w, &ext) < 0) { output("error (0x%x)\n", carrier_get_error()); return; }
+        output("avatar_url: %s\nurl: %s\nens: %s\nextra: %s\n", ext.avatar_url, ext.url, ext.ens, ext.extra);
+        return;
+    }
+    if (argc == 2) {
+        if (carrier_get_friend_profile_ext(w, argv[1], &ext) < 0) { output("error (0x%x)\n", carrier_get_error()); return; }
+        output("friend %s: avatar_url %s url %s ens %s extra %s\n", argv[1], ext.avatar_url, ext.url, ext.ens, ext.extra);
+        return;
+    }
+    if (argc == 4 && !strcmp(argv[1], "set")) {
+        if (carrier_get_self_profile_ext(w, &ext) < 0) memset(&ext, 0, sizeof(ext));
+        const char *v = strcmp(argv[3], "-") ? argv[3] : "";
+        if (!strcmp(argv[2], "avatar_url")) strncpy(ext.avatar_url, v, sizeof(ext.avatar_url) - 1);
+        else if (!strcmp(argv[2], "url")) strncpy(ext.url, v, sizeof(ext.url) - 1);
+        else if (!strcmp(argv[2], "ens")) strncpy(ext.ens, v, sizeof(ext.ens) - 1);
+        else if (!strcmp(argv[2], "extra")) strncpy(ext.extra, v, sizeof(ext.extra) - 1);
+        else { output("Invalid command syntax.\n"); return; }
+        if (carrier_set_self_profile_ext(w, &ext) < 0) output("error (0x%x) — too long, or the whole profile no longer fits 1007 bytes\n", carrier_get_error());
+        else output("ok\n");
+        return;
+    }
+    output("Invalid command syntax.\n");
+}
+
 static void display_user_info(const CarrierUserInfo *info)
 {
     output("           ID: %s\n", info->userid);
@@ -2138,6 +2251,11 @@ struct command {
     { "me",         self_info,              "me - Display own details. *OR* me set [name | description | gender | phone | email | region] [Value] - Set own user details individually." },
     { "nospam",     self_nospam,            "nospam - Display current nospam value. *OR* nospam [ value ] - Change nospam value to enforce address change." },
     { "presence",   self_presence,          "presence - Display current presence. *OR* presence [ none | away | busy ] - Display self presence." },
+    { "sign",       identity_sign,          "sign [Message] - Sign a message with this identity (XEdDSA, hex out)." },
+    { "verify",     identity_verify,        "verify [User ID] [Message] [Signature hex] - Verify a signature against a user ID." },
+    { "exportkey",  identity_export,        "exportkey yes - Print this identity's 32-byte secret key (hex)." },
+    { "clientinfo", client_info,            "clientinfo - Show what this client advertises. *OR* clientinfo [User ID] - A friend's. *OR* clientinfo [proto] [platform] [os] [app] - Set (proto 2 only if this app answers DNPACK1 acks)." },
+    { "profile",    profile_ext,            "profile - Show own profile extension. *OR* profile [User ID] - A friend's. *OR* profile set [avatar_url | url | ens | extra] [Value | -] - Set a field." },
 
     { "fadd",       friend_add,             "fadd [Address] [Message] - Add new friend." },
     { "faccept",    friend_accept,          "faccept [User ID] - Accept friend request." },
