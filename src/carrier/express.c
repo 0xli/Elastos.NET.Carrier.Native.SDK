@@ -58,7 +58,11 @@
  * about another node's. So the pull watermark and the DELETE-until owed
  * after a pull are per node, never shared across nodes.
  *
- * Pulling and deleting visit every node each cycle.
+ * Nodes stay in the CONFIGURED order for the whole life of the connector:
+ * posting tries them first-to-last and stops at the first that accepts, so
+ * new senders keep storing on the first node (the one phones on old builds,
+ * which pull from a single node, still read) unless it is down. Pulling and
+ * deleting visit every node each cycle.
  */
 typedef struct ExpNode {
     char *ipv4;
@@ -85,7 +89,6 @@ struct ExpConnector {
 
     uint32_t magic_num;
 
-    int curr_express_node;
     int express_nodes_size;
     ExpNode express_nodes[0];
 };
@@ -670,10 +673,15 @@ static int postmsg_runner(ExpTasklet *base)
           length, data[0], data[1], data[length - 2], data[length - 1]);
 #endif
 
+    /*
+     * First success, in the CONFIGURED order. Not the fastest node: while
+     * phones on old builds (which pull from a single node) are in the field,
+     * a new sender must keep storing on the first node unless it is down,
+     * or those phones never see the message.
+     */
     snprintf(path, sizeof(path), "%s/%s", task->to, my_userid(connector));
     for(idx = 0; idx < connector->express_nodes_size; idx++) {
-        int node_idx = (idx + connector->curr_express_node) % connector->express_nodes_size;
-        ExpNode *node = &connector->express_nodes[node_idx];
+        ExpNode *node = &connector->express_nodes[idx];
 
         task->crypted_data_cache.pos = 0;
         task->crypted_data_cache.size = task->data_size + NONCE_BYTES + ZERO_BYTES;
@@ -702,17 +710,22 @@ static int postmsg_runner(ExpTasklet *base)
         task->crypted_data_cache.pos = -1;
         task->crypted_data_cache.size = -1;
         task->crypted_data_cache.data = NULL;
-        if (rc >= 0)
+        if (rc >= 0) {
+            if (idx > 0)
+                vlogW("Express: posted to node #%d %s:%u after %d node(s) failed",
+                      idx, node->ipv4, (unsigned)node->port, idx);
             break;
+        }
+        vlogW("Express: post to node #%d %s:%u failed (%x), trying next",
+              idx, node->ipv4, (unsigned)node->port, rc);
     }
 
     connector->on_stat_cb(connector->carrier, task->to, task->type, task->msgid, rc);
     if(rc < 0) {
-        vlogE("Express: Failed to post message.(%x)", rc);
+        vlogE("Express: Failed to post message on all %d node(s).(%x)",
+              connector->express_nodes_size, rc);
         return rc;
     }
-
-    connector->curr_express_node = (idx + connector->curr_express_node) % connector->express_nodes_size;
 
     vlogD("Express: Success to post message to %s.", task->to);
     return 0;
@@ -813,13 +826,14 @@ static int speedmeter_runner(ExpTasklet *base)
     int rc;
     ExpTasklet *task = (ExpTasklet *)base;
     ExpressConnector *connector = task->connector;
-    int idx, iidx, jidx;
-    struct timeval starttime;
-    struct timeval *timeloss;
+    int idx;
+    struct timeval starttime, endtime, diff;
 
-    timeloss = alloca(sizeof(*timeloss) * connector->express_nodes_size);
-    memset(timeloss, 0, sizeof(*timeloss) * connector->express_nodes_size);
-
+    /*
+     * Metering only. The nodes are NOT reordered by latency any more: the
+     * configured order is the posting order (see postmsg_runner), and pulls
+     * visit every node anyway.
+     */
     for(idx = 0; idx < connector->express_nodes_size; idx++) {
         ExpNode *node = &connector->express_nodes[idx];
 
@@ -827,37 +841,17 @@ static int speedmeter_runner(ExpTasklet *base)
         rc = http_do(connector, node->ipv4, node->port,
                      "version", HTTP_METHOD_HEAD, NULL);
         if(rc >= 0) {
-            gettimeofday(&timeloss[idx], NULL);
-            timersub(&timeloss[idx], &starttime, &timeloss[idx]);
+            gettimeofday(&endtime, NULL);
+            timersub(&endtime, &starttime, &diff);
+            node->latency_us = (long)diff.tv_sec * 1000000L + diff.tv_usec;
+            vlogI("Express: node #%d %s:%u HEAD /version %ld.%03ld ms",
+                  idx, node->ipv4, (unsigned)node->port,
+                  node->latency_us / 1000, node->latency_us % 1000);
         } else {
-            timeloss[idx].tv_sec = EXP_HTTP_HEAD_TIMEOUT;
+            node->latency_us = -1;
+            vlogW("Express: node #%d %s:%u HEAD /version failed (%x)",
+                  idx, node->ipv4, (unsigned)node->port, rc);
         }
-    }
-
-    // bubble sort
-    int total_count = connector->express_nodes_size - 1;
-    for (iidx = 0; iidx < total_count; iidx++) {
-        for (jidx = 0; jidx < total_count - iidx; jidx++) {
-            if (timercmp(&timeloss[jidx], &timeloss[jidx + 1], >)) {
-                struct timeval tmptime;
-                ExpNode tmpnode;
-
-                memcpy(&tmptime, &timeloss[jidx + 1], sizeof(struct timeval));
-                memcpy(&timeloss[jidx + 1], &timeloss[jidx], sizeof(struct timeval));
-                memcpy(&timeloss[jidx], &tmptime, sizeof(struct timeval));
-
-                memcpy(&tmpnode, &connector->express_nodes[jidx + 1], sizeof(ExpNode));
-                memcpy(&connector->express_nodes[jidx + 1], &connector->express_nodes[jidx], sizeof(ExpNode));
-                memcpy(&connector->express_nodes[jidx], &tmpnode, sizeof(ExpNode));
-            }
-        }
-    }
-
-    vlogD("Express: meter express node speed:");
-    for(idx = 0; idx < connector->express_nodes_size; idx++) {
-        vlogD("  %s ==> %ld%06ld",
-              connector->express_nodes[idx].ipv4,
-              timeloss[idx].tv_sec, timeloss[idx].tv_usec);
     }
 
     return 0;
