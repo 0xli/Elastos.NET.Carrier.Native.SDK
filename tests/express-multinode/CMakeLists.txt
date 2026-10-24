@@ -51,6 +51,10 @@ set(LIBS
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
     set(LIBS ${LIBS} m)
 endif()
+if(APPLE)
+    # curl 8's macOS init (SCDynamicStoreCopyProxies), see deps/libcurl.
+    set(LIBS ${LIBS} "-framework CoreFoundation" "-framework SystemConfiguration")
+endif()
 
 add_executable(express_multinode_test ${SRC})
 add_dependencies(express_multinode_test carrier-static)

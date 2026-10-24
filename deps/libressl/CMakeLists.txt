@@ -4,19 +4,24 @@ include(CarrierDefaults)
 include(ExternalProject)
 include(ExternalCMakeArgs)
 
-set(PATCH_ARGS -s -p1 < "${CMAKE_CURRENT_LIST_DIR}/libressl.patch")
+# LibreSSL 4.3.4 (stable branch, 2026). Hash checked against
+# https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/SHA256 on 2026-10-24.
+# 2.9.2 (2019) could not complete a TLS handshake with an ECDSA server
+# certificate (CURLE 35), which forced the RSA pin on the Express hosts.
+# The old 2.9.2 cmake_minimum_required patch is not needed: 4.x asks for
+# CMake 3.16.4 itself.
+set(LIBRESSL_VERSION 4.3.4)
 
 ExternalProject_Add(
     libressl
 
     PREFIX ${CARRIER_DEPS_BUILD_PREFIX}
-    URL "https://github.com/elastos/libressl-portable/archive/v2.9.2.tar.gz"
-    URL_HASH SHA256=27888e600cf61395d4129692afe2403854a2324d3c26c609d93490fde40ea253
-    DOWNLOAD_NAME "libressl-2.9.2.tar.gz"
+    URL "https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-${LIBRESSL_VERSION}.tar.gz"
+    URL_HASH SHA256=57c8b2f8c6f9505587abaeddab003ea243d615edb7ed71957968121fc6316bd6
+    DOWNLOAD_NAME "libressl-${LIBRESSL_VERSION}.tar.gz"
     DOWNLOAD_DIR ${CARRIER_DEPS_TARBALL_DIR}
     DOWNLOAD_NO_PROGRESS 1
 
-    PATCH_COMMAND ${PATCH_EXE} ${PATCH_ARGS}
     CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${CARRIER_INT_DIST_DIR}
         -DLIBRESSL_SKIP_INSTALL=OFF
         -DLIBRESSL_APPS=OFF

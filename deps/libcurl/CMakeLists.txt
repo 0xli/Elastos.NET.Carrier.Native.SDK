@@ -29,32 +29,35 @@ else()
     set(PATCH_EXE "echo")
     set(PATCH_ARGS "Done")
 
+    # curl 8.x: the TLS backend must be named (--with-openssl, which also
+    # covers LibreSSL); --with-ssl and the *ssl/polarssl/cyassl/metalink
+    # switches of the 7.64 era are gone. HTTP(S) only, no CA bundle path
+    # baked in (the SDK sets CURLOPT_SSL_VERIFYPEER 0 and the iOS/Android
+    # builds must not inherit a macOS path).
     set(CONFIGURE_CMD "./configure")
     set(CONFIGURE_ARGS
         "--prefix=${CARRIER_INT_DIST_DIR}"
-        "--with-ssl=${CARRIER_INT_DIST_DIR}"
+        "--with-openssl=${CARRIER_INT_DIST_DIR}"
         "--with-zlib=${CARRIER_INT_DIST_DIR}"
         "--disable-shared"
         "--enable-static"
+        "--without-ca-bundle"
+        "--without-ca-path"
         "--without-brotli"
+        "--without-zstd"
         "--without-ldap-lib"
         "--without-lber-lib"
-        "--without-winssl"
-        "--without-schannel"
-        "--without-darwinssl"
         "--without-gnutls"
-        "--without-polarssl"
         "--without-mbedtls"
-        "--without-cyassl"
         "--without-wolfssl"
         "--without-libpsl"
-        "--without-libmetalink"
         "--without-libssh2"
         "--without-libssh"
-        "--without-librtmp"
-        "--without-winidn"
         "--without-libidn2"
         "--without-nghttp2"
+        "--without-ngtcp2"
+        "--without-nghttp3"
+        "--without-libgsasl"
         "--enable-http"
         "--disable-ftp"
         "--disable-file"
@@ -67,10 +70,12 @@ else()
         "--disable-tftp"
         "--disable-pop3"
         "--disable-imap"
-        "--disable-smb"
         "--disable-smtp"
         "--disable-gopher"
+        "--disable-mqtt"
+        "--disable-websockets"
         "--disable-manual"
+        "--disable-docs"
         ${CONFIGURE_ARGS_INIT})
 
     set(INSTALL_CMD
@@ -81,9 +86,11 @@ ExternalProject_Add(
     curl
 
     PREFIX ${CARRIER_DEPS_BUILD_PREFIX}
-    URL "https://github.com/curl/curl/releases/download/curl-7_64_0/curl-7.64.0.tar.bz2"
-    URL_HASH SHA256=d573ba1c2d1cf9d8533fadcce480d778417964e8d04ccddcc76e591d544cf2eb
-    DOWNLOAD_NAME "curl-7.64.0.tar.bz2"
+    # curl 8.23.0 (2026). Hash computed from the curl.se download on
+    # 2026-10-24; mirror: https://github.com/curl/curl/releases/download/curl-8_23_0/
+    URL "https://curl.se/download/curl-8.23.0.tar.bz2"
+    URL_HASH SHA256=95b22eb32bf6d1fa6e3e9463bdb61cece3efc56d86576a9b3cbd428246a6d854
+    DOWNLOAD_NAME "curl-8.23.0.tar.bz2"
     DOWNLOAD_DIR ${CARRIER_DEPS_TARBALL_DIR}
     DOWNLOAD_NO_PROGRESS 1
     LOG_DOWNLOAD FALSE
@@ -108,6 +115,12 @@ endif()
 
 if(NOT ANDROID)
     set(CURL_DEPS ${CURL_DEPS} pthread)
+endif()
+
+# curl 8 on macOS (not iOS: curl_setup.h keeps CURL_MACOS_CALL_COPYPROXIES
+# off for TARGET_OS_IPHONE) calls SCDynamicStoreCopyProxies once at init.
+if(APPLE AND NOT IOS)
+    set(CURL_DEPS ${CURL_DEPS} "-framework CoreFoundation" "-framework SystemConfiguration")
 endif()
 
 add_library(libcurl INTERFACE)
