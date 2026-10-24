@@ -51,10 +51,24 @@
 #include "express.h"
 #include "http_client.h"
 
+/*
+ * One configured Express node. Every node is an independent store with its
+ * own keypair, database and clock: a message lives only on the node its
+ * sender posted it to, and the timestamps one node hands out say nothing
+ * about another node's. So the pull watermark and the DELETE-until owed
+ * after a pull are per node, never shared across nodes.
+ *
+ * Pulling and deleting visit every node each cycle.
+ */
 typedef struct ExpNode {
     char *ipv4;
     uint16_t port;
     uint8_t shared_key[DHT_PUBLIC_KEY_SIZE];
+
+    uint64_t last_timestamp;     // newest offline-message ts delivered from THIS node
+    uint64_t pending_del;        // DELETE ?until= still owed to THIS node (0: none)
+    unsigned consecutive_fails;  // GET failures in a row, for the log only
+    long latency_us;             // HEAD /version round trip at start, log only (-1: failed)
 } ExpNode;
 
 struct ExpConnector {
@@ -73,8 +87,6 @@ struct ExpConnector {
 
     int curr_express_node;
     int express_nodes_size;
-    uint64_t last_offmsg_timestamp;
-    uint64_t pending_del_timestamp;
     ExpNode express_nodes[0];
 };
 
@@ -131,10 +143,22 @@ static void express_state_path(ExpressConnector *connector, char *buf, size_t le
     snprintf(buf, len, "%s/%s", base, EXP_STATE_FILENAME);
 }
 
+/*
+ * State file, one line per node:
+ *
+ *     <ipv4>:<port> <last_timestamp> <pending_del>
+ *
+ * Keyed by host:port so that a node keeps its watermark when the configured
+ * list is reordered or extended. The file written before per-node state
+ * (commit 290779b) held a single "<last> <pending>" line; that line is read
+ * onto the first configured node, which is the only node those builds ever
+ * pulled from in practice.
+ */
 static void save_express_state(ExpressConnector *connector)
 {
     FILE *fp;
     char path[PATH_MAX];
+    int idx;
 
     express_state_path(connector, path, sizeof(path));
     if (!path[0])
@@ -146,18 +170,34 @@ static void save_express_state(ExpressConnector *connector)
         return;
     }
 
-    fprintf(fp, "%" PRIu64 " %" PRIu64 "\n",
-            connector->last_offmsg_timestamp,
-            connector->pending_del_timestamp);
+    for (idx = 0; idx < connector->express_nodes_size; idx++) {
+        ExpNode *node = &connector->express_nodes[idx];
+        fprintf(fp, "%s:%u %" PRIu64 " %" PRIu64 "\n",
+                node->ipv4, (unsigned)node->port,
+                node->last_timestamp, node->pending_del);
+    }
     fclose(fp);
+}
+
+static ExpNode *find_node(ExpressConnector *connector, const char *key)
+{
+    int idx;
+    char node_key[EXP_HTTP_URL_MAXSIZE];
+
+    for (idx = 0; idx < connector->express_nodes_size; idx++) {
+        ExpNode *node = &connector->express_nodes[idx];
+        snprintf(node_key, sizeof(node_key), "%s:%u", node->ipv4, (unsigned)node->port);
+        if (strcmp(node_key, key) == 0)
+            return node;
+    }
+    return NULL;
 }
 
 static void load_express_state(ExpressConnector *connector)
 {
     FILE *fp;
     char path[PATH_MAX];
-    uint64_t last_ts = 0;
-    uint64_t pending_ts = 0;
+    char line[EXP_HTTP_URL_MAXSIZE + 64];
 
     express_state_path(connector, path, sizeof(path));
     if (!path[0])
@@ -167,11 +207,29 @@ static void load_express_state(ExpressConnector *connector)
     if (!fp)
         return;
 
-    if (fscanf(fp, "%" SCNu64 " %" SCNu64, &last_ts, &pending_ts) >= 1) {
-        connector->last_offmsg_timestamp = last_ts;
-        connector->pending_del_timestamp = pending_ts;
-        vlogD("Express: loaded state last=%" PRIu64 ", pending_del=%" PRIu64,
-              connector->last_offmsg_timestamp, connector->pending_del_timestamp);
+    while (fgets(line, sizeof(line), fp)) {
+        char key[EXP_HTTP_URL_MAXSIZE];
+        uint64_t last_ts = 0;
+        uint64_t pending_ts = 0;
+        ExpNode *node;
+
+        if (sscanf(line, "%1023s %" SCNu64 " %" SCNu64, key, &last_ts, &pending_ts) == 3) {
+            node = find_node(connector, key);
+            if (!node) {
+                vlogD("Express: state for unconfigured node %s ignored", key);
+                continue;
+            }
+        } else if (sscanf(line, "%" SCNu64 " %" SCNu64, &last_ts, &pending_ts) >= 1) {
+            // pre per-node format: belongs to the first configured node.
+            node = &connector->express_nodes[0];
+        } else {
+            continue;
+        }
+
+        node->last_timestamp = last_ts;
+        node->pending_del = pending_ts;
+        vlogD("Express: loaded state node=%s:%u last=%" PRIu64 ", pending_del=%" PRIu64,
+              node->ipv4, (unsigned)node->port, node->last_timestamp, node->pending_del);
     }
     fclose(fp);
 }
@@ -544,7 +602,13 @@ static int http_do(ExpressConnector *connector,
     return 0;
 }
 
-static int del_msgs(ExpressConnector *connector, int64_t msg_lasttime)
+/*
+ * DELETE /<me>?until=<ts> on ONE node. The timestamp was handed out by that
+ * node, so it must never be sent to any other node: another node's clock
+ * could be ahead and the request would wipe messages there that were never
+ * delivered.
+ */
+static int del_msgs_on(ExpressConnector *connector, ExpNode *node, uint64_t msg_lasttime)
 {
     int rc;
     char lasttime[256];
@@ -554,53 +618,42 @@ static int del_msgs(ExpressConnector *connector, int64_t msg_lasttime)
     char *encoded_data;
     size_t encoded_sz;
     char path[EXP_HTTP_URL_MAXSIZE];
-    int idx;
 
-    if(msg_lasttime <= 0)
+    if(msg_lasttime == 0)
         return 0;
 
-    snprintf(lasttime, sizeof(lasttime), "%"PRId64, msg_lasttime);
+    snprintf(lasttime, sizeof(lasttime), "%" PRIu64, msg_lasttime);
     lasttime_len = strlen(lasttime);
 
-    vlogI("Express: delete attempt start until=%" PRId64, msg_lasttime);
-    for(idx = 0; idx < connector->express_nodes_size; idx++) {
-        int node_idx = (idx + connector->curr_express_node) % connector->express_nodes_size;
-        ExpNode *node = &connector->express_nodes[node_idx];
-
-        crypted_data = alloca(NONCE_BYTES + lasttime_len + ZERO_BYTES);
-        rc = encrypt_data(node->shared_key, (uint8_t*)lasttime, lasttime_len, crypted_data);
-        if(rc < 0) {
-            vlogE("Express: encrypt last tiime failed.(%x)", rc);
-            return rc;
-        }
-        crypted_sz = rc;
-
-        encoded_sz = crypted_sz * 1.4f + 1;
-        encoded_data = alloca(encoded_sz);
-        encoded_data = base58_encode(crypted_data, crypted_sz,
-                                    encoded_data, &encoded_sz);
-        if(encoded_data == NULL || encoded_sz <= 0) {
-            vlogE("Express: encode last time failed.");
-            return CARRIER_EXPRESS_ERROR(ERROR_INVALID_CREDENTIAL);
-        }
-
-        snprintf(path, sizeof(path), "%s?until=%s", my_userid(connector), encoded_data);
-        rc = http_do(connector, node->ipv4, node->port,
-                     path, HTTP_METHOD_DELETE,
-                     NULL);
-        if (rc >= 0) {
-            vlogI("Express: delete succeeded until=%" PRId64 " node=%s:%u",
-                  msg_lasttime, node->ipv4, node->port);
-            break;
-        }
-    }
+    crypted_data = alloca(NONCE_BYTES + lasttime_len + ZERO_BYTES);
+    rc = encrypt_data(node->shared_key, (uint8_t*)lasttime, lasttime_len, crypted_data);
     if(rc < 0) {
-        vlogE("Express: delete message failed.(%x)", rc);
+        vlogE("Express: encrypt last time failed.(%x)", rc);
+        return rc;
+    }
+    crypted_sz = rc;
+
+    encoded_sz = crypted_sz * 1.4f + 1;
+    encoded_data = alloca(encoded_sz);
+    encoded_data = base58_encode(crypted_data, crypted_sz,
+                                encoded_data, &encoded_sz);
+    if(encoded_data == NULL || encoded_sz <= 0) {
+        vlogE("Express: encode last time failed.");
+        return CARRIER_EXPRESS_ERROR(ERROR_INVALID_CREDENTIAL);
+    }
+
+    snprintf(path, sizeof(path), "%s?until=%s", my_userid(connector), encoded_data);
+    rc = http_do(connector, node->ipv4, node->port,
+                 path, HTTP_METHOD_DELETE,
+                 NULL);
+    if (rc < 0) {
+        vlogW("Express: delete until=%" PRIu64 " failed on node=%s:%u (%x), will retry next cycle",
+              msg_lasttime, node->ipv4, (unsigned)node->port, rc);
         return rc;
     }
 
-    connector->curr_express_node = (idx + connector->curr_express_node) % connector->express_nodes_size;
-
+    vlogI("Express: delete succeeded until=%" PRIu64 " node=%s:%u",
+          msg_lasttime, node->ipv4, (unsigned)node->port);
     return 0;
 }
 
@@ -673,48 +726,85 @@ static int pullmsgs_runner(ExpTasklet *base)
     const char *path;
     int idx;
 
+    int pulled = 0;
+    int last_rc = 0;
+
+    /*
+     * Visit EVERY configured node; a message lives only on the node its
+     * sender posted it to. A node that fails is logged and skipped, never
+     * aborts the loop. Each node has its own watermark: the GET parses
+     * against THAT node's last timestamp, and the DELETE-until that follows
+     * goes to THAT node only. This matches the JS client
+     * (peer/packages/peer/src/compat/express.ts, pullOnce).
+     */
     path = my_userid(connector);
-    task->last_timestamp = connector->last_offmsg_timestamp;
     for(idx = 0; idx < connector->express_nodes_size; idx++) {
-        int node_idx = (idx + connector->curr_express_node) % connector->express_nodes_size;
-        ExpNode *node = &connector->express_nodes[node_idx];
+        ExpNode *node = &connector->express_nodes[idx];
 
         task->shared_key_cache = node->shared_key;
+        task->last_timestamp = node->last_timestamp;
+        if (task->data) {               // leftover bytes from the previous node
+            deref(task->data);
+            task->data = NULL;
+        }
+        task->len = 0;
+
         rc = http_do(connector, node->ipv4, node->port,
                      path, HTTP_METHOD_GET,
                      task);
-        if (rc >= 0)
-            break;
-    }
-    if(rc < 0) {
-        vlogE("Express: Failed to pull message.(%x)", rc);
-        return rc;
-    }
-    connector->curr_express_node = (idx + connector->curr_express_node) % connector->express_nodes_size;
-    if (task->last_timestamp > connector->last_offmsg_timestamp)
-        connector->last_offmsg_timestamp = task->last_timestamp;
-    if (task->last_timestamp > 0 && task->last_timestamp > connector->pending_del_timestamp) {
-        connector->pending_del_timestamp = task->last_timestamp;
-        vlogI("Express: pending delete watermark updated to=%" PRIu64,
-              connector->pending_del_timestamp);
-    }
-    save_express_state(connector);
-    vlogD("Express: Success to pull message from %s.", path);
+        if (rc < 0) {
+            node->consecutive_fails++;
+            last_rc = rc;
+            if (node->consecutive_fails == 1 || node->consecutive_fails % 10 == 0)
+                vlogW("Express: pull from node #%d %s:%u failed (%x), %u in a row; skipping it this cycle",
+                      idx, node->ipv4, (unsigned)node->port, rc, node->consecutive_fails);
+            else
+                vlogD("Express: pull from node #%d %s:%u failed (%x), %u in a row",
+                      idx, node->ipv4, (unsigned)node->port, rc, node->consecutive_fails);
+            continue;
+        }
+        if (node->consecutive_fails) {
+            vlogI("Express: node #%d %s:%u recovered after %u failure(s)",
+                  idx, node->ipv4, (unsigned)node->port, node->consecutive_fails);
+            node->consecutive_fails = 0;
+        }
+        pulled++;
 
-    if(connector->pending_del_timestamp > 0) {
-        vlogI("Express: retrying delete for pending watermark=%" PRIu64,
-              connector->pending_del_timestamp);
-        rc = del_msgs(connector, connector->pending_del_timestamp);
-        if(rc < 0) {
-            vlogW("Express: Failed to delete message.(%x), pending watermark=%" PRIu64
-                  " will retry on next cycle.", rc, connector->pending_del_timestamp);
-        } else {
-            vlogI("Express: pending delete cleared for watermark=%" PRIu64,
-                  connector->pending_del_timestamp);
-            connector->pending_del_timestamp = 0;
+        if (task->last_timestamp > node->last_timestamp) {
+            node->last_timestamp = task->last_timestamp;
+            node->pending_del = task->last_timestamp;
             save_express_state(connector);
+            vlogI("Express: pulled from node #%d %s:%u, watermark=%" PRIu64,
+                  idx, node->ipv4, (unsigned)node->port, node->last_timestamp);
+        } else {
+            vlogD("Express: pulled from node #%d %s:%u, nothing new (watermark=%" PRIu64 ")",
+                  idx, node->ipv4, (unsigned)node->port, node->last_timestamp);
+        }
+
+        if (node->pending_del > 0) {
+            rc = del_msgs_on(connector, node, node->pending_del);
+            if (rc >= 0) {
+                node->pending_del = 0;
+                save_express_state(connector);
+            }
         }
     }
+
+    if (task->data) {
+        deref(task->data);
+        task->data = NULL;
+        task->len = 0;
+    }
+
+    if (!pulled) {
+        vlogE("Express: Failed to pull message from all %d node(s).(%x)",
+              connector->express_nodes_size, last_rc);
+        return last_rc < 0 ? last_rc : CARRIER_EXPRESS_ERROR(ERROR_WRONG_STATE);
+    }
+    if (pulled < connector->express_nodes_size)
+        vlogW("Express: pulled from %d of %d node(s)", pulled, connector->express_nodes_size);
+    else
+        vlogD("Express: pulled from all %d node(s)", pulled);
     return 0;
 }
 
@@ -934,14 +1024,15 @@ ExpressConnector *express_connector_create(Carrier *carrier,
     connector->stop_flag = 0;
 
     connector->magic_num = htonl(EXP_HTTP_MAGICNUM);
-    connector->last_offmsg_timestamp = 0;
-    connector->pending_del_timestamp = 0;
-    load_express_state(connector);
 
     connector->express_nodes_size = carrier->pref.express_size;
     for(idx = 0; idx < connector->express_nodes_size; idx++) {
         connector->express_nodes[idx].ipv4 = carrier->pref.express_nodes[idx].ipv4;
         connector->express_nodes[idx].port = carrier->pref.express_nodes[idx].port;
+        connector->express_nodes[idx].last_timestamp = 0;
+        connector->express_nodes[idx].pending_del = 0;
+        connector->express_nodes[idx].consecutive_fails = 0;
+        connector->express_nodes[idx].latency_us = -1;
         rc = compute_sharedkey(carrier,
                                carrier->pref.express_nodes[idx].public_key,
                                connector->express_nodes[idx].shared_key);
@@ -951,6 +1042,8 @@ ExpressConnector *express_connector_create(Carrier *carrier,
             return NULL;
         }
     }
+    // after the node table: the state file is keyed by node.
+    load_express_state(connector);
 
     rc = enqueue_speedmeter_tasklet(connector);
     if (rc < 0) {
