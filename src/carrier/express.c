@@ -201,6 +201,7 @@ static void load_express_state(ExpressConnector *connector)
     FILE *fp;
     char path[PATH_MAX];
     char line[EXP_HTTP_URL_MAXSIZE + 64];
+    int legacy = 0;
 
     express_state_path(connector, path, sizeof(path));
     if (!path[0])
@@ -225,6 +226,7 @@ static void load_express_state(ExpressConnector *connector)
         } else if (sscanf(line, "%" SCNu64 " %" SCNu64, &last_ts, &pending_ts) >= 1) {
             // pre per-node format: belongs to the first configured node.
             node = &connector->express_nodes[0];
+            legacy = 1;
         } else {
             continue;
         }
@@ -235,6 +237,11 @@ static void load_express_state(ExpressConnector *connector)
               node->ipv4, (unsigned)node->port, node->last_timestamp, node->pending_del);
     }
     fclose(fp);
+
+    if (legacy) {
+        vlogI("Express: migrated single-node state file to per-node format");
+        save_express_state(connector);
+    }
 }
 
 static inline int conv_curlcode(int curlcode) {

@@ -47,6 +47,7 @@ endif()
 if(ENABLE_TESTS)
     add_subdirectory(tests/apitests)
     add_subdirectory(tests/offmsg)
+    add_subdirectory(tests/express-multinode)
 endif()
 
 if(ENABLE_UNIT_TESTS)
