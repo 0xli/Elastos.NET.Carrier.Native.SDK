@@ -3,10 +3,16 @@
 # ANDROID_NDK_HOME Android NDK home directory
 # ANDROID_ABI [armeabi-v7a | arm64-v8a | x86 | x86_64]
 
+# ANDROID_API    Android API level (default 21). The Beagle builds use 24
+#                (getifaddrs); pass -DANDROID_API=24.
+
 # Targeting system
 set(CMAKE_SYSTEM_NAME Android)
 set(CMAKE_C_COMPILER_ID Clang)
-set(CMAKE_SYSTEM_VERSION 21)
+if(NOT ANDROID_API)
+    set(ANDROID_API 21)
+endif()
+set(CMAKE_SYSTEM_VERSION ${ANDROID_API})
 
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR})
 include(CheckBuildOptions)
