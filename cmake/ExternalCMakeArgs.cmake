@@ -25,6 +25,7 @@ if(ANDROID)
     set(CMAKE_ARGS_INIT ${CMAKE_ARGS_INIT}
         "-DANDROID_NDK_HOME=${CMAKE_ANDROID_NDK}"
         "-DANDROID_ABI=${ANDROID_ABI}"
+        "-DANDROID_API=${ANDROID_API}"
         -DCMAKE_SHARED_LINKER_FLAGS=-Wl,--exclude-libs,ALL)
 endif()
 
