@@ -163,10 +163,14 @@ NDK=$HOME/Library/Android/sdk/ndk/28.2.13676358 && A=$HOME/devs/agentnet-v2/andr
 ### 3.4 Assemble the AAR by hand
 
 `classes.jar` holds `.class` files (not dex); the Java sources use only
-`android.jar`. Version `6.0.5-beagle1` for this change.
+`android.jar` plus a `BuildConfig` that Gradle would generate: without the
+stand-in below `javac` fails on `Log.java` (`BuildConfig.DEBUG`) and silently
+leaves a half-filled `classes.jar` (31 classes instead of 68). Versions so
+far: `6.0.5-beagle1` (Express multi-node), `6.0.5-beagle2` (requester's
+avatar on a friend request, native dc65696 + Android 7c55863).
 
 ```bash
-V=6.0.5-beagle1 && NDK=$HOME/Library/Android/sdk/ndk/28.2.13676358 && A=$HOME/devs/agentnet-v2/android/app && W=/tmp/carrier-aar && rm -rf $W && mkdir -p $W/classes $W/aar/jni/arm64-v8a && javac --release 11 -cp $HOME/Library/Android/sdk/platforms/android-35/android.jar -d $W/classes $(find $A/src/main/java -name '*.java') && (cd $W/classes && jar cf ../aar/classes.jar .) && cp $A/src/main/AndroidManifest.xml $W/aar/ && cp $A/native-dist/lib/arm64-v8a/*.so /tmp/carrierjni/libcarrierjni.so $NDK/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so $W/aar/jni/arm64-v8a/ && (cd $W/aar && zip -qr ../carrier-$V.aar .) && unzip -l $W/carrier-$V.aar
+V=6.0.5-beagle2 && NDK=$HOME/Library/Android/sdk/ndk/28.2.13676358 && A=$HOME/devs/agentnet-v2/android/app && W=/tmp/carrier-aar && rm -rf $W && mkdir -p $W/classes $W/aar/jni/arm64-v8a $W/gen/org/elastos/carrier && printf 'package org.elastos.carrier;\npublic final class BuildConfig { public static final boolean DEBUG = false; }\n' > $W/gen/org/elastos/carrier/BuildConfig.java && javac --release 11 -cp $HOME/Library/Android/sdk/platforms/android-35/android.jar -d $W/classes $(find $A/src/main/java -name '*.java') $W/gen/org/elastos/carrier/BuildConfig.java && (cd $W/classes && jar cf ../aar/classes.jar .) && cp $A/src/main/AndroidManifest.xml $W/aar/ && cp $A/native-dist/lib/arm64-v8a/*.so /tmp/carrierjni/libcarrierjni.so $NDK/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so $W/aar/jni/arm64-v8a/ && (cd $W/aar && zip -qr ../carrier-$V.aar .) && unzip -l $W/carrier-$V.aar && echo "classes: $(unzip -l $W/aar/classes.jar | grep -c '\.class') (expect 68)"
 ```
 
 Expected listing: `AndroidManifest.xml`, `classes.jar`, and
@@ -182,8 +186,14 @@ NDK=$HOME/Library/Android/sdk/ndk/28.2.13676358 && for f in /tmp/carrier-aar/aar
 
 ### 3.5 Publish to beaglechat's local maven and bump the app
 
+When `~/StudioProjects/beaglechat` is dirty, publish from a temporary
+worktree of the target branch instead (`git worktree add -b tmp/aar
+/tmp/bc-aar origin/<branch>`, commit only `local-maven/org/elastos/carrier/$V`,
+`git push origin HEAD:<branch>`, `git worktree remove --force /tmp/bc-aar`),
+as done for `6.0.5-beagle2` (beaglechat 1d17d5b).
+
 ```bash
-V=6.0.5-beagle1 && M=$HOME/StudioProjects/beaglechat/local-maven/org/elastos/carrier/$V && mkdir -p $M && cp /tmp/carrier-aar/carrier-$V.aar $M/ && printf '<?xml version="1.0" encoding="UTF-8"?>\n<project xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd" xmlns="http://maven.apache.org/POM/4.0.0"\n    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>org.elastos</groupId>\n  <artifactId>carrier</artifactId>\n  <version>%s</version>\n  <packaging>aar</packaging>\n</project>\n' "$V" > $M/carrier-$V.pom && ls $M
+V=6.0.5-beagle2 && M=$HOME/StudioProjects/beaglechat/local-maven/org/elastos/carrier/$V && mkdir -p $M && cp /tmp/carrier-aar/carrier-$V.aar $M/ && printf '<?xml version="1.0" encoding="UTF-8"?>\n<project xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd" xmlns="http://maven.apache.org/POM/4.0.0"\n    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>org.elastos</groupId>\n  <artifactId>carrier</artifactId>\n  <version>%s</version>\n  <packaging>aar</packaging>\n</project>\n' "$V" > $M/carrier-$V.pom && ls $M
 ```
 
 Then in `~/StudioProjects/beaglechat/app/build.gradle`:
