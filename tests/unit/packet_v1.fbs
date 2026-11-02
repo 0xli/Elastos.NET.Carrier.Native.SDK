@@ -1,0 +1,69 @@
+// The friendreq schema as shipped in iOS/Android/JS before 2026-11-01 (three
+// fields), in its own namespace so friendreq_test can run the OLD generated
+// reader, verifier and builder against the new packet.c in one program.
+// Keep this file pure ASCII (the bundled FlatCC parser).
+
+namespace carrier_v1;
+
+table userinfo {
+    avatar : bool = false;
+    name   : string;
+    descr  : string;
+    phone  : string;
+    gender : string;
+    email  : string;
+    region : string;
+}
+
+table friendreq {
+    name   : string;
+    descr  : string;
+    hello  : string;
+}
+
+table friendmsg {
+    ext    : string;
+    msg    : [ubyte];
+}
+
+table bulkmsg {
+    ext    : string;
+    totalsz: uint;
+    tid    : long;
+    data   : [ubyte];
+}
+
+table invitereq {
+    ext    : string;
+    tid    : long;
+    bundle : string;
+    totalsz: uint;
+    data   : [uint8];
+}
+
+table invitersp {
+    ext    : string;
+    tid    : long;
+    bundle : string;
+    totalsz: uint;
+    status : int;
+    reason : string;
+    data   : [uint8];
+}
+
+union anybody {
+    userinfo,
+    friendreq,
+    friendmsg,
+    invitereq,
+    invitersp,
+    bulkmsg
+}
+
+table packet
+{
+    type   : uint8;
+    body   : anybody;
+}
+
+root_type packet;

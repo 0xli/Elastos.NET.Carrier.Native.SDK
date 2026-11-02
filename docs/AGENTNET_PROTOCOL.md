@@ -165,3 +165,54 @@ JS peer) are listed in the Beagle iOS repo,
 
 Build and run the unit tests: `cmake -DENABLE_UNIT_TESTS=ON ..`, then
 `DYLD_LIBRARY_PATH=src/carrier:intermediates/lib tests/unit/identity_test [sig.json]`.
+
+## 4. The requester's avatar on a friend request (2026-11-01)
+
+A friend request showed a generated picture until it was accepted: `friendreq`
+carried only name / descr / hello. Every client (JS peer, iOS, Android, this
+SDK) now writes the same two APPENDED fields; the wire format is fixed in
+decent-hq `docs/tasks/TASK-2026-11-01-avatar-on-friend-request.md`.
+
+```
+table friendreq {
+    name       : string;   // 0
+    descr      : string;   // 1
+    hello      : string;   // 2
+    gender     : string;   // 3  CryptoPunk id as a decimal string (= userinfo.gender); "" / absent = none
+    avatar_url : string;   // 4  https URL of a custom avatar, <= 128 bytes; absent if longer or none
+}
+```
+
+Append only, never reorder 0-2; a writer omits an empty field, so a request
+without an avatar is byte-identical to a pre-2026-11 one (asserted by the test).
+Readers draw a URL first, then the punk, then beagles.eth, then a generated picture.
+
+### What this SDK does
+
+| | |
+|---|---|
+| **send** | `carrier_add_friend` writes `me.gender` (the punk the app set with `carrier_set_self_info`) and `me_ext.avatar_url` (`carrier_set_self_profile_ext`) when the URL is at most `CARRIER_MAX_FRIEND_REQUEST_AVATAR_URL_LEN` (128). The encoded request must fit `tox_friend_add`: `CARRIER_MAX_FRIEND_REQUEST_PACKET_LEN` = toxcore's `TOX_MAX_FRIEND_REQUEST_LENGTH` = **1016 bytes** (`dht_friend_add` passes the bytes through unchanged). `packet_encode_fit` drops `avatar_url` first when it would not fit, never the punk, never name/descr/hello (`vlogW` says so). |
+| **receive** | the existing `friend_request` callback keeps its signature. `info->gender` is the requester's punk id ("" from an old sender). The URL is read with **`carrier_get_friend_request_profile_ext(carrier, userid, &ext)`** → `ext.avatar_url` ("" when the request had none; `-1` / `ERROR_NOT_EXIST` when no request from that userid is remembered). The SDK keeps the last `CARRIER_FRIEND_REQUEST_EXT_SLOTS` (32) requesters in memory, not on disk: read it in the callback or when drawing the pending list and keep it with the app's own pending-request record. |
+| **Express** | an offline friend request is the same bytes: `carrier_add_friend` hands the one encoded buffer to `dht_friend_add` and to `express_enqueue_post_request`, and the Express receive path (`handle_offline_friend_request_cb`) calls the same `carrier_notify_friend_request` as the DHT hook. |
+
+Sizes (from `tests/unit/friendreq_test`, name 63 + descr 127 + punk `9999` + a 128-byte URL):
+420 bytes with an empty hello, 278 without the URL, 260 for a legacy 3-field request; that leaves
+**599 bytes of hello** beside the URL. The SDK puts no limit of its own on hello.
+
+### Bindings
+
+- iOS / Android: nothing to change for the punk, both already copy `gender` out of the
+  `CarrierUserInfo` they hand to `onFriendRequest`. To show a custom-avatar URL on the request
+  card, bind `carrier_get_friend_request_profile_ext` and call it inside `onFriendRequest`.
+- Senders on iOS / Android write the fields by setting the user's punk as `gender` through
+  `carrier_set_self_info` and the avatar URL through `carrier_set_self_profile_ext` before
+  `carrier_add_friend`; nothing else.
+
+### Compatibility, proven by `tests/unit/friendreq_test`
+
+`tests/unit/packet_v1.fbs` is the pre-2026-11 schema generated into its own namespace, so the test
+runs the OLD reader with the flatcc verifier on against a 5-field request (accepted, name/descr/hello
+read), the NEW reader against an old 3-field request (fields come back NULL), the exact 1016-byte
+cap with the drop-URL-first rule, and the real receive path (`carrier_notify_friend_request`) into
+the callback and the getter. Run it like `identity_test`:
+`DYLD_LIBRARY_PATH=src/carrier:intermediates/lib tests/unit/friendreq_test`.

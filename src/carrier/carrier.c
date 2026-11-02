@@ -1161,6 +1161,8 @@ static void carrier_destroy(void *argv)
 {
     Carrier *w = (Carrier *)argv;
 
+    pthread_mutex_destroy(&w->freq_ext_lock);
+
     if (w->pref.data_location)
         free(w->pref.data_location);
 
@@ -1247,6 +1249,7 @@ Carrier *carrier_new(const CarrierOptions *opts, CarrierCallbacks *callbacks,
         carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_OUT_OF_MEMORY));
         return NULL;
     }
+    pthread_mutex_init(&w->freq_ext_lock, NULL);
 
     w->pref.udp_enabled = opts->udp_enabled;
     w->pref.data_location = strdup(opts->persistent_location);
@@ -1763,9 +1766,64 @@ void notify_friend_status_cb(uint32_t friend_number, int status,
     deref(fi);
 }
 
-static
-void notify_friend_request_cb(const uint8_t *public_key, const uint8_t* greeting,
-                              size_t length, void *context)
+static void remember_friend_request_ext(Carrier *w, const char *userid,
+                                        const char *gender, const char *avatar_url)
+{
+    FriendRequestExt *slot = NULL;
+    int i;
+
+    pthread_mutex_lock(&w->freq_ext_lock);
+    for (i = 0; i < CARRIER_FRIEND_REQUEST_EXT_SLOTS; i++) {
+        if (!strcmp(w->freq_ext[i].userid, userid)) {
+            slot = &w->freq_ext[i];
+            break;
+        }
+    }
+    if (!slot) {
+        slot = &w->freq_ext[w->freq_ext_next];
+        w->freq_ext_next = (w->freq_ext_next + 1) % CARRIER_FRIEND_REQUEST_EXT_SLOTS;
+    }
+    memset(slot, 0, sizeof(*slot));
+    strcpy(slot->userid, userid);
+    if (gender)
+        strcpy(slot->gender, gender);
+    if (avatar_url)
+        strcpy(slot->avatar_url, avatar_url);
+    pthread_mutex_unlock(&w->freq_ext_lock);
+}
+
+int carrier_get_friend_request_profile_ext(Carrier *w, const char *userid,
+                                           CarrierProfileExt *ext)
+{
+    int i;
+
+    if (!w || !userid || !*userid || !ext ||
+        strlen(userid) > CARRIER_MAX_ID_LEN) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
+        return -1;
+    }
+
+    memset(ext, 0, sizeof(*ext));
+    pthread_mutex_lock(&w->freq_ext_lock);
+    for (i = 0; i < CARRIER_FRIEND_REQUEST_EXT_SLOTS; i++) {
+        if (!strcmp(w->freq_ext[i].userid, userid)) {
+            strcpy(ext->avatar_url, w->freq_ext[i].avatar_url);
+            pthread_mutex_unlock(&w->freq_ext_lock);
+            return 0;
+        }
+    }
+    pthread_mutex_unlock(&w->freq_ext_lock);
+    carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_NOT_EXIST));
+    return -1;
+}
+
+/* The friend-request entry point for both transports: the DHT hook
+ * (installed in carrier_run) and the Express offline path
+ * (handle_offline_friend_request_cb) call it with the request bytes as the
+ * sender's carrier_add_friend encoded them. Internal; the unit tests drive it
+ * directly. */
+void carrier_notify_friend_request(const uint8_t *public_key, const uint8_t* greeting,
+                                   size_t length, void *context)
 {
     Carrier *w = (Carrier *)context;
     uint32_t friend_number;
@@ -1811,6 +1869,23 @@ void notify_friend_request_cb(const uint8_t *public_key, const uint8_t* greeting
 
     strcpy(ui.name, name);
     strcpy(ui.description, desc);
+
+    /* Requester's avatar (friendreq gender + avatar_url, 2026-11-01). The
+     * punk id goes out on the callback as info->gender; the URL is kept for
+     * carrier_get_friend_request_profile_ext(). Over-long values from a
+     * foreign writer are dropped, not truncated. */
+    {
+        const char *gender = packet_get_gender(cp);
+        const char *avatar_url = packet_get_avatar_url(cp);
+
+        if (gender && strlen(gender) <= CARRIER_MAX_GENDER_LEN)
+            strcpy(ui.gender, gender);
+        else
+            gender = NULL;
+        if (avatar_url && strlen(avatar_url) > CARRIER_MAX_AVATAR_URL_LEN)
+            avatar_url = NULL;
+        remember_friend_request_ext(w, ui.userid, gender, avatar_url);
+    }
 
     if (w->callbacks.friend_request)
         w->callbacks.friend_request(w, ui.userid, &ui, hello, w->context);
@@ -2807,7 +2882,7 @@ int carrier_run(Carrier *w, int interval)
     w->dht_callbacks.notify_friend_desc = notify_friend_description_cb;
     w->dht_callbacks.notify_friend_connection = notify_friend_connection_cb;
     w->dht_callbacks.notify_friend_status = notify_friend_status_cb;
-    w->dht_callbacks.notify_friend_request = notify_friend_request_cb;
+    w->dht_callbacks.notify_friend_request = carrier_notify_friend_request;
     w->dht_callbacks.notify_friend_message = notify_friend_message_cb;
     w->dht_callbacks.notify_friend_read_receipt = notify_friend_read_receipt_cb;
     w->dht_callbacks.notify_group_invite = notify_group_invite_cb;
@@ -3474,8 +3549,22 @@ int carrier_add_friend(Carrier *w, const char *address, const char *hello)
     packet_set_name(cp, w->me.name);
     packet_set_descr(cp, w->me.description);
     packet_set_hello(cp, hello);
+    /* Requester's avatar (2026-11-01): the punk id (userinfo gender) and a
+     * short custom avatar URL, so the receiver can draw us before accepting.
+     * Empty values are not written; a URL over the request limit is left to
+     * userinfo once we are friends. */
+    packet_set_gender(cp, w->me.gender);
+    if (strlen(w->me_ext.avatar_url) <= CARRIER_MAX_FRIEND_REQUEST_AVATAR_URL_LEN)
+        packet_set_avatar_url(cp, w->me_ext.avatar_url);
 
-    data = packet_encode(cp, &data_len);
+    {
+        bool dropped = false;
+        data = packet_encode_fit(cp, CARRIER_MAX_FRIEND_REQUEST_PACKET_LEN,
+                                 &data_len, &dropped);
+        if (dropped)
+            vlogW("Carrier: friend request to %s over %d bytes, avatar_url left out.",
+                  address, CARRIER_MAX_FRIEND_REQUEST_PACKET_LEN);
+    }
     packet_free(cp);
 
     if (!data) {
@@ -3952,7 +4041,7 @@ static void handle_offline_friend_request_cb(EventBase *base, Carrier *w)
         return;
     }
 
-    notify_friend_request_cb(pubkey, event->data, event->length, w);
+    carrier_notify_friend_request(pubkey, event->data, event->length, w);
 }
 
 static void notify_offreq_received(Carrier *w, const char *from,

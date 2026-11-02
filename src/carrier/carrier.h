@@ -176,6 +176,19 @@ extern "C" {
 #define CARRIER_MAX_PROFILE_EXTRA_LEN       255
 /** userinfo rides toxcore's status message; this is its hard packet limit. */
 #define CARRIER_MAX_USERINFO_PACKET_LEN     1007
+/**
+ * A friend request rides tox_friend_add; this is toxcore's
+ * TOX_MAX_FRIEND_REQUEST_LENGTH, the hard limit of the encoded request
+ * (name + descr + hello + gender + avatar_url). carrier_add_friend drops
+ * avatar_url first when the request would not fit.
+ */
+#define CARRIER_MAX_FRIEND_REQUEST_PACKET_LEN 1016
+/**
+ * The avatar URL a friend request carries (2026-11-01, every client writes
+ * the same wire field). Longer self avatar URLs are not sent on the request,
+ * only in userinfo once friends.
+ */
+#define CARRIER_MAX_FRIEND_REQUEST_AVATAR_URL_LEN 128
 
 #define CARRIER_IDENTITY_SIGNATURE_BYTES    64
 #define CARRIER_IDENTITY_SECRET_BYTES       32
@@ -839,6 +852,12 @@ typedef struct CarrierCallbacks {
      *      userid      [in] The user id who wants friend with us.
      * @param
      *      info        [in] The basic user info who wants to be friend.
+     *                       info->gender carries the requester's CryptoPunk
+     *                       id (decimal string, "" when none) when the
+     *                       sender wrote it (2026-11-01 and later clients).
+     *                       The requester's avatar URL is read with
+     *                       carrier_get_friend_request_profile_ext() from
+     *                       inside this callback or later.
      * @param
      *      hello       [in] PIN for target user, or any application defined
      *                       content.
@@ -1177,6 +1196,24 @@ int carrier_get_self_profile_ext(Carrier *carrier, CarrierProfileExt *ext);
 CARRIER_API
 int carrier_get_friend_profile_ext(Carrier *carrier, const char *friendid,
                                    CarrierProfileExt *ext);
+
+/**
+ * \~English
+ * What the most recent friend request from userid carried of the requester's
+ * profile (2026-11-01 friendreq fields): ext->avatar_url is the custom avatar
+ * URL ("" when the request had none), the other members are "". The punk id
+ * itself is delivered as info->gender of the friend_request callback.
+ * The SDK keeps the last CARRIER_FRIEND_REQUEST_EXT_SLOTS requesters, so read
+ * it when the request arrives or when showing the pending list, and keep it
+ * with the pending request in the app's own store.
+ *
+ * @return 0 on success, -1 with ERROR_NOT_EXIST when no request from userid
+ *         is remembered (never received, or evicted).
+ */
+#define CARRIER_FRIEND_REQUEST_EXT_SLOTS    32
+CARRIER_API
+int carrier_get_friend_request_profile_ext(Carrier *carrier, const char *userid,
+                                           CarrierProfileExt *ext);
 
 /**
  * \~English

@@ -63,6 +63,10 @@ struct PacketFriendReq {
     const char *name;
     const char *descr;
     const char *hello;
+    /* Requester's avatar (appended friendreq fields). NULL from a sender that
+     * predates them. See packet.fbs. */
+    const char *gender;
+    const char *avatar_url;
 };
 
 struct PacketFriendMsg {
@@ -255,6 +259,9 @@ const char *packet_get_gender(Packet *cp)
     case PACKET_TYPE_USERINFO:
         gender = pktinfo->gender;
         break;
+    case PACKET_TYPE_FRIEND_REQUEST:
+        gender = pktfreq->gender;
+        break;
     default:
         assert(0);
         break;
@@ -371,7 +378,25 @@ void packet_set_##field(Packet *cp, const char *value)                      \
         ((struct PacketUserInfo *)cp)->field = value;                       \
 }
 
-USERINFO_STR_ACCESSOR(avatar_url)
+/* avatar_url lives in userinfo (profile extension) and, since 2026-11-01, in
+ * friendreq (the requester's avatar). */
+const char *packet_get_avatar_url(Packet *cp)
+{
+    assert(cp);
+    if (cp->type == PACKET_TYPE_USERINFO)
+        return ((struct PacketUserInfo *)cp)->avatar_url;
+    if (cp->type == PACKET_TYPE_FRIEND_REQUEST)
+        return ((struct PacketFriendReq *)cp)->avatar_url;
+    return NULL;
+}
+void packet_set_avatar_url(Packet *cp, const char *value)
+{
+    assert(cp);
+    if (cp->type == PACKET_TYPE_USERINFO)
+        ((struct PacketUserInfo *)cp)->avatar_url = value;
+    else if (cp->type == PACKET_TYPE_FRIEND_REQUEST)
+        ((struct PacketFriendReq *)cp)->avatar_url = value;
+}
 USERINFO_STR_ACCESSOR(url)
 USERINFO_STR_ACCESSOR(ens)
 USERINFO_STR_ACCESSOR(extra)
@@ -673,6 +698,9 @@ void packet_set_gender(Packet *cp, const char *gender)
     switch(cp->type) {
     case PACKET_TYPE_USERINFO:
         pktinfo->gender = gender;
+        break;
+    case PACKET_TYPE_FRIEND_REQUEST:
+        pktfreq->gender = gender;
         break;
     default:
         assert(0);
@@ -990,6 +1018,16 @@ uint8_t *packet_encode(Packet *cp, size_t *encoded_len)
         carrier_friendreq_descr_add(&builder, str);
         str = flatcc_builder_create_string_str(&builder, pktfreq->hello);
         carrier_friendreq_hello_add(&builder, str);
+        /* Appended fields: only non-empty values are emitted, so a request
+         * without an avatar is byte-identical to a pre-2026-11 one. */
+        if (pktfreq->gender && *pktfreq->gender) {
+            str = flatcc_builder_create_string_str(&builder, pktfreq->gender);
+            carrier_friendreq_gender_add(&builder, str);
+        }
+        if (pktfreq->avatar_url && *pktfreq->avatar_url) {
+            str = flatcc_builder_create_string_str(&builder, pktfreq->avatar_url);
+            carrier_friendreq_avatar_url_add(&builder, str);
+        }
         ref = carrier_friendreq_end(&builder);
         break;
 
@@ -1107,6 +1145,36 @@ uint8_t *packet_encode(Packet *cp, size_t *encoded_len)
     return encoded_data;
 }
 
+uint8_t *packet_encode_fit(Packet *cp, size_t max_len, size_t *encoded_len,
+                           bool *dropped_avatar_url)
+{
+    uint8_t *data;
+
+    if (dropped_avatar_url)
+        *dropped_avatar_url = false;
+
+    data = packet_encode(cp, encoded_len);
+    if (!data || *encoded_len <= max_len)
+        return data;
+
+    if (cp->type != PACKET_TYPE_FRIEND_REQUEST)
+        return data;
+
+    {
+        struct PacketFriendReq *freq = (struct PacketFriendReq *)cp;
+        if (!freq->avatar_url || !*freq->avatar_url)
+            return data;
+
+        /* Over the transport cap: the avatar URL is the first thing to go,
+         * never the punk (gender) and never name/descr/hello. */
+        free(data);
+        freq->avatar_url = NULL;
+        if (dropped_avatar_url)
+            *dropped_avatar_url = true;
+        return packet_encode(cp, encoded_len);
+    }
+}
+
 Packet *packet_decode(const uint8_t *data, size_t len)
 {
     Packet *cp;
@@ -1181,6 +1249,11 @@ Packet *packet_decode(const uint8_t *data, size_t len)
         pktfreq->name  = carrier_friendreq_name(tblfreq);
         pktfreq->descr = carrier_friendreq_descr(tblfreq);
         pktfreq->hello = carrier_friendreq_hello(tblfreq);
+        /* Appended fields; absent from a sender that predates them. */
+        if (carrier_friendreq_gender_is_present(tblfreq))
+            pktfreq->gender = carrier_friendreq_gender(tblfreq);
+        if (carrier_friendreq_avatar_url_is_present(tblfreq))
+            pktfreq->avatar_url = carrier_friendreq_avatar_url(tblfreq);
         break;
 
     case PACKET_TYPE_MESSAGE:

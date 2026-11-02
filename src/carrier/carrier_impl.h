@@ -73,6 +73,16 @@ typedef struct Preferences {
     ExpressNodeBuf *express_nodes;
 } Preferences;
 
+/* The requester's avatar from the last friend requests seen (friendreq
+ * gender + avatar_url, 2026-11-01), so an app can show it on the pending
+ * request before anyone accepts. A small ring; see
+ * carrier_get_friend_request_profile_ext(). */
+typedef struct FriendRequestExt {
+    char userid[CARRIER_MAX_ID_LEN + 1];
+    char gender[CARRIER_MAX_GENDER_LEN + 1];
+    char avatar_url[CARRIER_MAX_AVATAR_URL_LEN + 1];
+} FriendRequestExt;
+
 typedef struct EventBase EventBase;
 struct EventBase {
     void (*handle)(EventBase *, Carrier *);
@@ -148,6 +158,10 @@ struct Carrier {
     linked_hashtable_t *exts;
     pthread_t main_thread;
 
+    pthread_mutex_t freq_ext_lock;
+    FriendRequestExt freq_ext[CARRIER_FRIEND_REQUEST_EXT_SLOTS];
+    int freq_ext_next;
+
     int running;
     int quit;
 };
@@ -162,6 +176,11 @@ typedef struct ExtensionHolder {
 
 CARRIER_API
 int carrier_leave_all_groups(Carrier *w);
+
+/* Internal (not exported): the friend-request entry point shared by the DHT
+ * hook and the Express offline path. tests/unit/friendreq_test drives it. */
+void carrier_notify_friend_request(const uint8_t *public_key, const uint8_t *greeting,
+                                   size_t length, void *context);
 
 
 static inline

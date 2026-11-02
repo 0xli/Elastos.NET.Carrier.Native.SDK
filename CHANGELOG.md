@@ -1,3 +1,10 @@
+## Requester's avatar on a friend request (2026-11-01)
+
+- `friendreq` gains appended `gender` (CryptoPunk id) and `avatar_url` (<= 128 bytes), the wire format every client follows
+- `carrier_add_friend` sends the local punk (`me.gender`) and avatar URL; the request is kept under toxcore's 1016-byte `tox_friend_add` cap, avatar URL dropped first (`packet_encode_fit`, `CARRIER_MAX_FRIEND_REQUEST_PACKET_LEN`)
+- `friend_request` callback unchanged: `info->gender` carries the punk; new `carrier_get_friend_request_profile_ext` returns the URL of a pending requester (last 32 kept)
+- `tests/unit/friendreq_test`: old reader (3-field schema, verifier on) accepts the new packet, new reader accepts the old one, cap, receive path
+
 ## AgentNet proto v2 (2026-09-18)
 
 - `carrier_identity_sign` / `carrier_identity_verify` (XEdDSA, JS-compatible), `carrier_export_secret_key`

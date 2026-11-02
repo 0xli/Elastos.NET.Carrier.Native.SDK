@@ -53,6 +53,13 @@ table friendreq {
     name   : string;
     descr  : string;
     hello  : string;
+    // Requester's avatar (APPENDED 2026-11-01; the JS peer writes the same
+    // two fields). Writers omit an empty field; readers that predate them
+    // see absent fields. The whole packet rides tox_friend_add, whose cap is
+    // TOX_MAX_FRIEND_REQUEST_LENGTH (1016 bytes): a sender that would
+    // overflow drops avatar_url first, never gender.
+    gender     : string;   // CryptoPunk id as a decimal string, same meaning as userinfo.gender
+    avatar_url : string;   // https URL of a custom avatar, <= 128 bytes
 }
 
 table friendmsg {

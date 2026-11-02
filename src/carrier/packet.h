@@ -140,6 +140,14 @@ void packet_set_reason(Packet *packet, const char *reason);
 
 uint8_t *packet_encode(Packet *packet, size_t *len);
 
+/* packet_encode, then, when the result is longer than max_len and the packet
+ * is a friend request carrying avatar_url, drop that field (in the packet
+ * too) and encode again. The friend request rides tox_friend_add, capped at
+ * CARRIER_MAX_FRIEND_REQUEST_PACKET_LEN; the avatar URL goes first, the punk
+ * (gender) and name/descr/hello never. dropped_avatar_url may be NULL. */
+uint8_t *packet_encode_fit(Packet *packet, size_t max_len, size_t *len,
+                           bool *dropped_avatar_url);
+
 Packet *packet_decode(const uint8_t *buf, size_t len);
 
 
