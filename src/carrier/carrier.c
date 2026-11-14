@@ -3976,9 +3976,12 @@ static int send_express_message(Carrier *w, const char *userid,
     return 0;
 }
 
-static int send_friend_message_internal(Carrier *w, const char *to,
-                                        const void *msg, size_t len,
-                                        uint32_t msgid)
+/* allow_express: false for frames tied to a live session (file transfer):
+ * stale by the time an offline mailbox is pulled, so they go out over the
+ * session or not at all. */
+static int send_friend_message_internal_ex(Carrier *w, const char *to,
+                                           const void *msg, size_t len,
+                                           uint32_t msgid, bool allow_express)
 {
     char *addr;
     char *userid;
@@ -4053,7 +4056,7 @@ static int send_friend_message_internal(Carrier *w, const char *to,
         rc = CARRIER_DHT_ERROR(ERROR_FRIEND_OFFLINE);
     }
 
-    if (rc < 0 && w->connector)
+    if (rc < 0 && allow_express && w->connector)
         rc = send_express_message(w, userid, msgid, msg, len, ext_name);
 
     if (rc < 0) {
@@ -4062,6 +4065,13 @@ static int send_friend_message_internal(Carrier *w, const char *to,
     }
 
     return rc;
+}
+
+static int send_friend_message_internal(Carrier *w, const char *to,
+                                        const void *msg, size_t len,
+                                        uint32_t msgid)
+{
+    return send_friend_message_internal_ex(w, to, msg, len, msgid, true);
 }
 
 static void handle_offline_friend_message_cb(EventBase *base, Carrier *w)
@@ -4288,6 +4298,13 @@ int carrier_send_friend_message(Carrier *w, const char *to,
                             CarrierFriendMessageReceiptCallback *cb, void *context)
 {
     return send_message_with_receipt_internal(w, to, message, len, msgid, cb, context);
+}
+
+int carrier_send_friend_message_live(Carrier *w, const char *to,
+                                     const void *message, size_t len)
+{
+    /* No receipt is tracked, so nothing expires into Express later either. */
+    return send_friend_message_internal_ex(w, to, message, len, 0, false) < 0 ? -1 : 0;
 }
 
 int carrier_invite_friend(Carrier *w, const char *to, const char *bundle,

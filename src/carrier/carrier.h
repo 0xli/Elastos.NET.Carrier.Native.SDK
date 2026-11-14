@@ -1095,6 +1095,33 @@ int carrier_run(Carrier *carrier, int interval);
 CARRIER_API
 void carrier_network_changed(Carrier *carrier);
 
+/**
+ * \~English
+ * Send a message to a friend over the live session only.
+ *
+ * Unlike carrier_send_friend_message(), the message is never parked on an
+ * Express node, neither when the friend is offline nor later for want of a
+ * receipt, and no receipt is reported. For frames tied to a live session
+ * (file-transfer offers, data and replies), which are stale by the time an
+ * offline mailbox is pulled; the sender's own retries cover a loss.
+ *
+ * @param
+ *      carrier     [in] A handle identifying the Carrier node instance.
+ * @param
+ *      to          [in] The target id (userid or userid@extension).
+ * @param
+ *      message     [in] The message content.
+ * @param
+ *      len         [in] The message length in bytes.
+ *
+ * @return
+ *      0 if the message went out over the session. -1 otherwise (the friend
+ *      is not connected, or an error), with the code from carrier_get_error().
+ */
+CARRIER_API
+int carrier_send_friend_message_live(Carrier *carrier, const char *to,
+                                     const void *message, size_t len);
+
 /******************************************************************************
  * Internal node information
  *****************************************************************************/
