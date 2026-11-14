@@ -73,6 +73,12 @@ int dht_iteration_idle(DHT *dht);
 
 void dht_iterate(DHT *dht, void *context);
 
+/* Network recovery (carrier_run): has the system taken the UDP socket away,
+ * and make it again. */
+bool dht_udp_defunct(DHT *dht);
+
+bool dht_udp_rebind(DHT *dht);
+
 int dht_self_get_name(DHT *dht, uint8_t *name, size_t length);
 
 int dht_self_set_name(DHT *dht, const uint8_t *name, size_t length);

@@ -1544,6 +1544,102 @@ static void notify_friends(Carrier *w)
         w->callbacks.friend_list(w, NULL, w->context);
 }
 
+/*
+ * Network recovery.
+ *
+ * toxcore makes its UDP socket once and never again, gives a dropped TCP
+ * relay one reconnect before deleting it, and this node bootstrapped only
+ * once, when carrier_run started. A phone that changes networks (Wi-Fi to
+ * mobile data, cell handoffs, a dead zone, back to Wi-Fi), or whose socket
+ * iOS takes away while the app is suspended, could lose every way back to
+ * the network until the app was killed (decent-hq
+ * TASK-2026-11-13-ios-core-stuck-after-background).
+ *
+ * So, from the run loop:
+ *  - the UDP socket was taken away (iOS)           -> new socket + bootstrap now;
+ *  - carrier_network_changed() was called           -> new socket + bootstrap now;
+ *  - not connected for 20 s (also before the first
+ *    connection: an app started in a dead zone)    -> bootstrap again, then after
+ *    40, 80, 120 s, every 120 s; from 60 s down the
+ *    UDP socket is made again too.
+ * Bootstrapping again also adds the bootstrap nodes back as TCP relays.
+ */
+#define NET_RECOVERY_FIRST_MS       (20 * 1000)
+#define NET_RECOVERY_MAX_WAIT_MS    (120 * 1000)
+#define NET_REBIND_AFTER_MS         (60 * 1000)
+
+static uint64_t monotonic_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+static void note_network_status(Carrier *w, bool connected)
+{
+    w->net_connected = connected;
+    if (connected) {
+        w->net_down_since = 0;
+        w->net_recovery_wait = NET_RECOVERY_FIRST_MS;
+    } else if (!w->net_down_since) {
+        w->net_down_since = monotonic_ms();
+    }
+}
+
+static void connect_to_bootstraps(Carrier *w);
+
+static void do_network_recovery(Carrier *w)
+{
+    uint64_t now = monotonic_ms();
+#if defined(_MSC_VER)
+    int changed = InterlockedExchange((volatile LONG *)&w->net_changed, 0);
+#else
+    int changed = __atomic_exchange_n(&w->net_changed, 0, __ATOMIC_SEQ_CST);
+#endif
+    bool defunct = dht_udp_defunct(&w->dht);
+    bool rebind;
+    const char *why;
+
+    if (defunct) {
+        why = "the system took the UDP socket away";
+        rebind = true;
+    } else if (changed) {
+        why = "the network changed";
+        rebind = true;
+    } else if (!w->net_connected && w->net_down_since &&
+               now - w->net_down_since >= NET_RECOVERY_FIRST_MS &&
+               now - w->net_last_recovery >= w->net_recovery_wait) {
+        why = "not connected";
+        rebind = now - w->net_down_since >= NET_REBIND_AFTER_MS;
+        w->net_recovery_wait *= 2;
+        if (w->net_recovery_wait > NET_RECOVERY_MAX_WAIT_MS)
+            w->net_recovery_wait = NET_RECOVERY_MAX_WAIT_MS;
+    } else {
+        return;
+    }
+
+    vlogI("Carrier: network recovery (%s, offline %" PRIu64 " s): %sbootstrapping again.",
+          why, w->net_down_since ? (now - w->net_down_since) / 1000 : (uint64_t)0,
+          rebind ? "new UDP socket, " : "");
+
+    if (rebind && !dht_udp_rebind(&w->dht))
+        vlogW("Carrier: network recovery: could not make a new UDP socket.");
+
+    connect_to_bootstraps(w);
+    w->net_last_recovery = now;
+}
+
+void carrier_network_changed(Carrier *w)
+{
+    if (!w)
+        return;
+#if defined(_MSC_VER)
+    InterlockedExchange((volatile LONG *)&w->net_changed, 1);
+#else
+    __atomic_store_n(&w->net_changed, 1, __ATOMIC_SEQ_CST);
+#endif
+}
+
 static void notify_connection_cb(bool connected, void *context)
 {
     Carrier *w = (Carrier *)context;
@@ -1555,6 +1651,7 @@ static void notify_connection_cb(bool connected, void *context)
     }
 
     w->connection_status = connection_status(connected);
+    note_network_status(w, connected);
     if (w->callbacks.connection_status)
         w->callbacks.connection_status(w, w->connection_status, w->context);
 
@@ -2898,6 +2995,10 @@ int carrier_run(Carrier *w, int interval)
     w->running = 1;
 
     connect_to_bootstraps(w);
+    w->net_connected = false;
+    w->net_down_since = monotonic_ms();
+    w->net_last_recovery = w->net_down_since;
+    w->net_recovery_wait = NET_RECOVERY_FIRST_MS;
 
     while(!w->quit) {
         int idle_interval;
@@ -2935,6 +3036,7 @@ int carrier_run(Carrier *w, int interval)
             usleep(tmp.tv_usec);
         }
 
+        do_network_recovery(w);
         dht_iterate(&w->dht, &w->dht_callbacks);
     }
 

@@ -1077,6 +1077,24 @@ void carrier_kill(Carrier *carrier);
 CARRIER_API
 int carrier_run(Carrier *carrier, int interval);
 
+/**
+ * \~English
+ * Tell the Carrier node that the device's network changed: Wi-Fi to mobile
+ * data or back, a new address, or a network again after none.
+ *
+ * On its next loop the node makes its UDP socket again (on the same port when
+ * it can) and contacts the bootstrap nodes and TCP relays again, instead of
+ * waiting to find out it is cut off. The node also does this by itself while
+ * it is not connected, and when the system has taken its UDP socket away.
+ *
+ * Safe to call from any thread, as often as the network changes.
+ *
+ * @param
+ *      carrier     [in] A handle identifying the Carrier node instance.
+ */
+CARRIER_API
+void carrier_network_changed(Carrier *carrier);
+
 /******************************************************************************
  * Internal node information
  *****************************************************************************/

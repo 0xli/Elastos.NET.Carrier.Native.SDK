@@ -1029,6 +1029,18 @@ int dht_iteration_idle(DHT *dht)
     return (int)tox_iteration_interval(tox);
 }
 
+bool dht_udp_defunct(DHT *dht)
+{
+    assert(dht && dht->tox);
+    return tox_carrier_udp_defunct(dht->tox);
+}
+
+bool dht_udp_rebind(DHT *dht)
+{
+    assert(dht && dht->tox);
+    return tox_carrier_udp_rebind(dht->tox);
+}
+
 void dht_iterate(DHT *dht, void *context)
 {
     Tox *tox = dht->tox;

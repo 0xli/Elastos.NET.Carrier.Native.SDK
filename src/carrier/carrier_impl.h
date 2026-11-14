@@ -162,6 +162,14 @@ struct Carrier {
     FriendRequestExt freq_ext[CARRIER_FRIEND_REQUEST_EXT_SLOTS];
     int freq_ext_next;
 
+    /* Network recovery, see do_network_recovery() in carrier.c. Times are
+     * CLOCK_MONOTONIC milliseconds. */
+    bool net_connected;
+    uint64_t net_down_since;
+    uint64_t net_last_recovery;
+    uint64_t net_recovery_wait;
+    int net_changed;    /* set by carrier_network_changed(), any thread */
+
     int running;
     int quit;
 };

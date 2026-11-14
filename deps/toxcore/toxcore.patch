@@ -11,3 +11,173 @@
  project(toxcore)
  
  set(CMAKE_MODULE_PATH ${toxcore_SOURCE_DIR}/cmake)
+--- a/toxcore/network.c	2020-12-03 19:47:49
++++ b/toxcore/network.c	2026-11-13 17:20:44
+@@ -1077,6 +1077,105 @@
+     return net;
+ }
+ 
++/* Carrier: is our UDP socket still usable? iOS reclaims ("defunct"s) the
++ * sockets of a suspended app; every later send and receive on such a socket
++ * fails, and toxcore never makes its socket again. SO_ISDEFUNCT (xnu
++ * sys/socket_private.h) reports it. Always false elsewhere. */
++bool networking_is_defunct(const Networking_Core *net)
++{
++    if (!net || net_family_is_unspec(net->family) || !sock_valid(net->sock)) {
++        return false;
++    }
++
++#if defined(__APPLE__)
++    int defunct = 0;
++    socklen_t length = sizeof(defunct);
++
++    if (getsockopt(net->sock.socket, SOL_SOCKET, 0x1101 /* SO_ISDEFUNCT */, (char *)&defunct, &length) == 0) {
++        return defunct != 0;
++    }
++
++#endif
++    return false;
++}
++
++/* Carrier: replace the UDP socket with a new one, set up like the one
++ * new_networking_ex made, on the same port if it can be had again (friends
++ * and DHT nodes keep our address), else on any port in the default range.
++ * For a socket the system took away, or one bound before a network change.
++ * The caller holds the tox lock. Returns 0 on success, -1 if the old
++ * socket was kept. */
++int networking_rebind(Networking_Core *net)
++{
++    if (!net || net_family_is_unspec(net->family)) {
++        return -1;
++    }
++
++    Socket sock = net_socket(net->family, TOX_SOCK_DGRAM, TOX_PROTO_UDP);
++
++    if (!sock_valid(sock)) {
++        LOGGER_ERROR(net->log, "rebind: no new socket");
++        return -1;
++    }
++
++    int n = 1024 * 1024 * 2;
++    setsockopt(sock.socket, SOL_SOCKET, SO_RCVBUF, (const char *)&n, sizeof(n));
++    setsockopt(sock.socket, SOL_SOCKET, SO_SNDBUF, (const char *)&n, sizeof(n));
++    int broadcast = 1;
++    setsockopt(sock.socket, SOL_SOCKET, SO_BROADCAST, (const char *)&broadcast, sizeof(broadcast));
++
++    if (!set_socket_nosigpipe(sock) || !set_socket_nonblock(sock)) {
++        LOGGER_ERROR(net->log, "rebind: could not set up the new socket");
++        kill_sock(sock);
++        return -1;
++    }
++
++    struct sockaddr_storage addr;
++    size_t addrsize;
++    uint16_t *portptr;
++    memset(&addr, 0, sizeof(struct sockaddr_storage));
++
++    if (net_family_is_ipv4(net->family)) {
++        struct sockaddr_in *addr4 = (struct sockaddr_in *)&addr;
++        addrsize = sizeof(struct sockaddr_in);
++        addr4->sin_family = AF_INET;
++        addr4->sin_addr.s_addr = htonl(INADDR_ANY);
++        portptr = &addr4->sin_port;
++    } else {
++        struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)&addr;
++        addrsize = sizeof(struct sockaddr_in6);
++        addr6->sin6_family = AF_INET6;
++        addr6->sin6_addr = in6addr_any;
++        portptr = &addr6->sin6_port;
++        set_socket_dualstack(sock);
++    }
++
++    const uint16_t old_port = net->port;   /* network byte order */
++    /* Free the old port first, so the new socket can take it. */
++    kill_sock(net->sock);
++    net->sock = sock;
++    net->port = 0;
++
++    *portptr = old_port;
++
++    if (old_port != 0 && bind(sock.socket, (struct sockaddr *)&addr, addrsize) == 0) {
++        net->port = old_port;
++    } else {
++        for (uint16_t port = TOX_PORTRANGE_FROM; port <= TOX_PORTRANGE_TO; ++port) {
++            *portptr = net_htons(port);
++
++            if (bind(sock.socket, (struct sockaddr *)&addr, addrsize) == 0) {
++                net->port = *portptr;
++                break;
++            }
++        }
++    }
++
++    /* Unbound, the first sendto() picks a port; toxcore copes with that. */
++    LOGGER_INFO(net->log, "rebind: new UDP socket on port %u (was %u)", net_ntohs(net->port), net_ntohs(old_port));
++    return 0;
++}
++
+ /* Function to cleanup networking stuff. */
+ void kill_networking(Networking_Core *net)
+ {
+--- a/toxcore/network.h	2020-12-03 19:47:49
++++ b/toxcore/network.h	2026-11-13 17:20:44
+@@ -539,6 +539,10 @@
+ /* Function to cleanup networking stuff (doesn't do much right now). */
+ void kill_networking(Networking_Core *net);
+ 
++/* Carrier: see network.c. */
++bool networking_is_defunct(const Networking_Core *net);
++int networking_rebind(Networking_Core *net);
++
+ #ifdef __cplusplus
+ }  // extern "C"
+ #endif
+--- a/toxcore/tox.c	2020-12-03 19:47:49
++++ b/toxcore/tox.c	2026-11-13 17:20:54
+@@ -803,6 +803,24 @@
+     return ret;
+ }
+ 
++bool tox_carrier_udp_defunct(Tox *tox)
++{
++    assert(tox != nullptr);
++    lock(tox);
++    const bool defunct = networking_is_defunct(tox->m->net);
++    unlock(tox);
++    return defunct;
++}
++
++bool tox_carrier_udp_rebind(Tox *tox)
++{
++    assert(tox != nullptr);
++    lock(tox);
++    const bool done = networking_rebind(tox->m->net) == 0;
++    unlock(tox);
++    return done;
++}
++
+ void tox_iterate(Tox *tox, void *user_data)
+ {
+     lock(tox);
+--- a/toxcore/tox.h	2020-12-03 19:47:49
++++ b/toxcore/tox.h	2026-11-13 17:20:54
+@@ -1062,6 +1062,19 @@
+  */
+ void tox_iterate(Tox *tox, void *user_data);
+ 
++/**
++ * Carrier: true when the system has taken away the UDP socket (iOS reclaims
++ * a suspended app's sockets). Every send and receive on it fails from then on.
++ */
++bool tox_carrier_udp_defunct(Tox *tox);
++
++/**
++ * Carrier: make the UDP socket again, on the same port when possible. For a
++ * reclaimed socket, or after the device changed networks. Returns true when
++ * a new socket is in place.
++ */
++bool tox_carrier_udp_rebind(Tox *tox);
++
+ 
+ /*******************************************************************************
+  *
