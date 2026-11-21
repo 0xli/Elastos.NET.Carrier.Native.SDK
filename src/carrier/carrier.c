@@ -1161,6 +1161,8 @@ static void carrier_destroy(void *argv)
 {
     Carrier *w = (Carrier *)argv;
 
+    pthread_cond_destroy(&w->network_resume);
+    pthread_mutex_destroy(&w->network_suspend_lock);
     pthread_mutex_destroy(&w->freq_ext_lock);
 
     if (w->pref.data_location)
@@ -1250,6 +1252,8 @@ Carrier *carrier_new(const CarrierOptions *opts, CarrierCallbacks *callbacks,
         return NULL;
     }
     pthread_mutex_init(&w->freq_ext_lock, NULL);
+    pthread_mutex_init(&w->network_suspend_lock, NULL);
+    pthread_cond_init(&w->network_resume, NULL);
 
     w->pref.udp_enabled = opts->udp_enabled;
     w->pref.data_location = strdup(opts->persistent_location);
@@ -1503,7 +1507,10 @@ void carrier_kill(Carrier *w)
         express_connector_kill(w->connector);
 
     if (w->running) {
+        pthread_mutex_lock(&w->network_suspend_lock);
         w->quit = 1;
+        pthread_cond_signal(&w->network_resume);
+        pthread_mutex_unlock(&w->network_suspend_lock);
 
         if (!pthread_equal(pthread_self(), w->main_thread))
             while(!w->quit) usleep(5000);
@@ -1622,7 +1629,7 @@ static void do_network_recovery(Carrier *w)
           why, w->net_down_since ? (now - w->net_down_since) / 1000 : (uint64_t)0,
           rebind ? "new UDP socket, " : "");
 
-    if (rebind && !dht_udp_rebind(&w->dht))
+    if (rebind && w->pref.udp_enabled && !dht_udp_rebind(&w->dht))
         vlogW("Carrier: network recovery: could not make a new UDP socket.");
 
     connect_to_bootstraps(w);
@@ -2963,6 +2970,45 @@ static void connect_to_bootstraps(Carrier *w)
     }
 }
 
+void carrier_set_network_suspended(Carrier *w, bool suspended)
+{
+    if (!w)
+        return;
+
+    pthread_mutex_lock(&w->network_suspend_lock);
+    w->network_suspended = suspended;
+    if (!suspended)
+        pthread_cond_signal(&w->network_resume);
+    pthread_mutex_unlock(&w->network_suspend_lock);
+}
+
+static void wait_for_network_resume(Carrier *w)
+{
+    pthread_mutex_lock(&w->network_suspend_lock);
+    bool suspended = w->network_suspended;
+    pthread_mutex_unlock(&w->network_suspend_lock);
+    if (!suspended)
+        return;
+
+    dht_suspend(&w->dht, &w->dht_callbacks);
+    notify_connection_cb(false, w);
+    vlogI("Carrier: networking suspended");
+
+    pthread_mutex_lock(&w->network_suspend_lock);
+    while (w->network_suspended && !w->quit)
+        pthread_cond_wait(&w->network_resume, &w->network_suspend_lock);
+    bool quitting = w->quit;
+    pthread_mutex_unlock(&w->network_suspend_lock);
+
+    if (!quitting) {
+        vlogI("Carrier: resuming networking");
+        carrier_network_changed(w);
+        do_network_recovery(w);
+        if (w->connector)
+            express_enqueue_pull_messages(w->connector);
+    }
+}
+
 int carrier_run(Carrier *w, int interval)
 {
     if (!w || interval < 0) {
@@ -3001,6 +3047,10 @@ int carrier_run(Carrier *w, int interval)
     w->net_recovery_wait = NET_RECOVERY_FIRST_MS;
 
     while(!w->quit) {
+        wait_for_network_resume(w);
+        if (w->quit)
+            break;
+
         int idle_interval;
         struct timeval expire;
         struct timeval check;

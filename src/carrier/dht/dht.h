@@ -72,6 +72,7 @@ void dht_get_savedata(DHT *dht, uint8_t *data);
 int dht_iteration_idle(DHT *dht);
 
 void dht_iterate(DHT *dht, void *context);
+void dht_suspend(DHT *dht, void *context);
 
 /* Network recovery (carrier_run): has the system taken the UDP socket away,
  * and make it again. */
