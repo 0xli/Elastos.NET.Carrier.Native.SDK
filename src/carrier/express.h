@@ -62,6 +62,8 @@ int express_enqueue_post_message_with_receipt(ExpressConnector *connector,
 
 int express_enqueue_pull_messages(ExpressConnector *connector);
 
+int express_enqueue_hold_release(ExpressConnector *connector);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

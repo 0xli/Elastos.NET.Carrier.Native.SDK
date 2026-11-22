@@ -2073,25 +2073,19 @@ static void notify_friend_changed(Carrier *w, CarrierFriendInfo *fi,
 
 static void do_friend_events(Carrier *w)
 {
-    linked_list_t *events = w->friend_events;
-    linked_list_iterator_t it;
+    EventBase *event;
 
-redo_events:
-    linked_list_iterate(events, &it);
-    while (linked_list_iterator_has_next(&it)) {
-        EventBase *event;
-        int rc;
-
-        rc = linked_list_iterator_next(&it, (void **)&event);
-        if (rc == 0)
+    // Pop one event at a time. The Express thread pushes to this list while
+    // the loop drains it; the iterator used before lost that race now and
+    // then (iterator_remove returned -1, unchecked), left the event in the
+    // list after handling it, and the redo handled it a second time: a
+    // duplicate friend request or offline message for the app.
+    // linked_list_pop_head asserts on an empty list in debug builds.
+    while (!linked_list_is_empty(w->friend_events)) {
+        event = (EventBase *)linked_list_pop_head(w->friend_events);
+        if (!event)
             break;
-
-        if (rc == -1)
-            goto redo_events;
-
         event->handle(event, w);
-        linked_list_iterator_remove(&it);
-
         deref(event);
     }
 }
@@ -3788,6 +3782,11 @@ int carrier_accept_friend(Carrier *w, const char *userid)
 
     notify_friend_changed(w, &fi->info, handle_add_friend_cb);
     deref(fi);
+
+    // Offline messages this sender posted before being accepted were held
+    // by the Express connector; let it deliver them now.
+    if (w->connector)
+        express_enqueue_hold_release(w->connector);
 
     return 0;
 }

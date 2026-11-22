@@ -1309,13 +1309,17 @@ Packet *packet_decode(const uint8_t *data, size_t len)
     return cp;
 }
 
-int packet_decode_pullmsg(const uint8_t *data, PacketPullMsg *pullmsg)
+int packet_decode_pullmsg(const uint8_t *data, size_t len, PacketPullMsg *pullmsg)
 {
     carrier_pullmsg_table_t pmsg_tbl;
     flatbuffers_uint8_vec_t vec;
 
     assert(data && pullmsg);
     memset(pullmsg, 0, sizeof(*pullmsg));
+
+    // The bytes come from a server: verify the buffer before reading it.
+    if (len == 0 || carrier_pullmsg_verify_as_root(data, len) != 0)
+        return -1;
 
     pmsg_tbl = carrier_pullmsg_as_root(data);
     if (!pmsg_tbl)

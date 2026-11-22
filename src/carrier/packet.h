@@ -160,6 +160,6 @@ typedef struct PacketPullMsg {
   const uint8_t *payload;
   size_t payload_sz;
 } PacketPullMsg;
-int packet_decode_pullmsg(const uint8_t *buf, PacketPullMsg *pullmsg);
+int packet_decode_pullmsg(const uint8_t *buf, size_t len, PacketPullMsg *pullmsg);
 
 #endif /* __CARRIER_CONTROL_PACKET_H__ */
