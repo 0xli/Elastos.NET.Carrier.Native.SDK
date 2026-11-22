@@ -212,6 +212,8 @@ def main():
     ap.add_argument('--keep', action='store_true', help='keep the work dir')
     args = ap.parse_args()
 
+    args.build_dir = os.path.abspath(args.build_dir)
+    args.express_root = os.path.abspath(os.path.expanduser(args.express_root))
     python = args.python or os.path.join(args.express_root, 'venv', 'bin', 'python')
     binary = os.path.join(args.build_dir, 'tests', 'express-multinode', 'express_multinode_test')
     if not os.path.exists(binary):

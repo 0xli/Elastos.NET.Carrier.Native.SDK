@@ -75,3 +75,24 @@ host fails with `CURLE: 35` (SSL connect error), which is why
 `lens.beagle.chat` pins an RSA certificate. The SDK does not verify the
 server certificate (`CURLOPT_SSL_VERIFYPEER 0`), so a self-signed cert is
 enough for the test.
+
+## Pull robustness tests (2026-11-22)
+
+- `express_parse_test` (built with ASan + UBSan by default, see
+  `EXPRESS_TEST_SANITIZE`) includes `express.c` and feeds the libcurl write
+  callback crafted bodies: each unacceptable kind of item first / middle /
+  last between valid ones, the terminator alone in its own callback, the
+  body split at every byte boundary, a cut-off transfer and its retry,
+  injected local failures, hostile lengths, and the hold for messages from
+  senders who are not friends yet (caps, release on accept, restart).
+  `EXPRESS_TEST_SECTIONS="1 2"` runs a subset; `EXPRESS_TEST_WORKDIR` moves
+  its data dir. Built with `-DOLD_EXPRESS -DEXPRESS_C_PATH='"<old express.c>"'`
+  it runs against an older parser for comparison.
+- `run_pickup_test.py` is the same story end to end against the two real
+  Express nodes, including the 234 KB / 373 KB payloads and the hold across a
+  process restart. `--core-only --binary <old driver>` shows the old
+  behaviour.
+
+```bash
+~/StudioProjects/Elastos.CarrierClassic.Express/venv/bin/python tests/express-multinode/run_pickup_test.py
+```

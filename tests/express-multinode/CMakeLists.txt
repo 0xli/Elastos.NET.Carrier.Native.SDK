@@ -59,3 +59,20 @@ endif()
 add_executable(express_multinode_test ${SRC})
 add_dependencies(express_multinode_test carrier-static)
 target_link_libraries(express_multinode_test ${LIBS})
+
+# express_parse_test drives the pull parser and the hold store directly by
+# including express.c. Built with ASan+UBSan unless EXPRESS_TEST_SANITIZE=OFF.
+option(EXPRESS_TEST_SANITIZE "Build express_parse_test with ASan and UBSan" ON)
+add_executable(express_parse_test express_parse_test.c)
+add_dependencies(express_parse_test carrier-static)
+target_include_directories(express_parse_test PRIVATE
+    ../../src/carrier
+    ../../src/carrier/dht
+    ${CMAKE_CURRENT_BINARY_DIR}/../../src/carrier
+    ${CARRIER_INT_DIST_DIR}/include)
+target_compile_definitions(express_parse_test PRIVATE CARRIER_BUILD)
+target_link_libraries(express_parse_test ${LIBS})
+if(EXPRESS_TEST_SANITIZE)
+    target_compile_options(express_parse_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined)
+    target_link_options(express_parse_test PRIVATE -fsanitize=address,undefined)
+endif()

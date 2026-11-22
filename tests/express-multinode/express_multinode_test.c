@@ -29,6 +29,7 @@
 #include <getopt.h>
 
 #include <crystal.h>
+#include <dirent.h>
 #include "carrier.h"
 #include "carrier_impl.h"
 #include "packet.h"
@@ -37,16 +38,65 @@
 #define MAX_NODES 8
 
 static pthread_mutex_t out_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_accept_requests;   // --accept: accept every friend request as it arrives
+
+/* FNV-1a 32 of a message body, so a test can check a large payload by hash. */
+static uint32_t fnv1a(const void *data, size_t len)
+{
+    const uint8_t *p = data;
+    uint32_t h = 0x811c9dc5u;
+    size_t i;
+    for (i = 0; i < len; i++) {
+        h ^= p[i];
+        h *= 0x01000193u;
+    }
+    return h;
+}
+
+static void on_friend_message(Carrier *w, const char *from, const void *msg, size_t len,
+                              int64_t timestamp, bool offline, void *context)
+{
+    (void)w; (void)context;
+    pthread_mutex_lock(&out_lock);
+    printf("MESSAGE from=%s len=%zu fnv=%08x ts=%lld offline=%d\n", from, len, fnv1a(msg, len),
+           (long long)timestamp, offline ? 1 : 0);
+    fflush(stdout);
+    pthread_mutex_unlock(&out_lock);
+}
+
+static int count_held(const char *data_dir)
+{
+    char path[1024];
+    DIR *d;
+    struct dirent *de;
+    int n = 0;
+    snprintf(path, sizeof(path), "%s/express_hold", data_dir);
+    d = opendir(path);
+    if (!d)
+        return 0;
+    while ((de = readdir(d)) != NULL)
+        if (strstr(de->d_name, ".held"))
+            n++;
+    closedir(d);
+    return n;
+}
 
 static void on_friend_request(Carrier *w, const char *userid,
                               const CarrierUserInfo *info,
                               const char *hello, void *context)
 {
-    (void)w; (void)info; (void)context;
+    (void)info; (void)context;
     pthread_mutex_lock(&out_lock);
     printf("REQUEST from=%s hello=%s\n", userid, hello ? hello : "");
     fflush(stdout);
     pthread_mutex_unlock(&out_lock);
+    if (g_accept_requests) {
+        int rc = carrier_accept_friend(w, userid);
+        pthread_mutex_lock(&out_lock);
+        printf("ACCEPTED %s rc=%d\n", userid, rc);
+        fflush(stdout);
+        pthread_mutex_unlock(&out_lock);
+    }
 }
 
 static void *run_thread(void *arg)
@@ -61,8 +111,12 @@ static void *run_thread(void *arg)
 static void usage(void)
 {
     fprintf(stderr,
-        "usage: express_multinode_test init|send|pull --data DIR [--node host:port:pk]...\n"
-        "       [--to ADDRESS --hello TEXT] [--wait SECONDS] [--loglevel N]\n");
+        "usage: express_multinode_test init|send|sendmsg|pull --data DIR [--node host:port:pk]...\n"
+        "       [--to ADDRESS|USERID --hello TEXT] [--size BYTES] [--wait SECONDS] [--loglevel N]\n"
+        "       [--friend USERID]... [--accept]\n"
+        "  send     post an offline friend request to --to ADDRESS\n"
+        "  sendmsg  post an offline friend message to --to USERID (--hello text, or --size bytes)\n"
+        "  pull     pull; --friend adds friends first, --accept accepts requests as they arrive\n");
 }
 
 static void print_state(const char *data_dir)
@@ -92,6 +146,9 @@ int main(int argc, char *argv[])
     const char *hello = "hello";
     int wait_sec = 5;
     int loglevel = CarrierLogLevel_Info;
+    long size = 0;
+    char *friends[MAX_NODES];
+    int nfriends = 0;
     char *node_specs[MAX_NODES];
     char *node_host[MAX_NODES];
     char *node_port[MAX_NODES];
@@ -113,6 +170,9 @@ int main(int argc, char *argv[])
         { "hello",    required_argument, NULL, 'h' },
         { "wait",     required_argument, NULL, 'w' },
         { "loglevel", required_argument, NULL, 'l' },
+        { "size",     required_argument, NULL, 's' },
+        { "friend",   required_argument, NULL, 'f' },
+        { "accept",   no_argument,       NULL, 'A' },
         { NULL, 0, NULL, 0 }
     };
 
@@ -123,8 +183,14 @@ int main(int argc, char *argv[])
     mode = argv[1];
     optind = 2;
 
-    while ((opt = getopt_long(argc, argv, "d:n:t:h:w:l:", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "d:n:t:h:w:l:s:f:A", long_opts, NULL)) != -1) {
         switch (opt) {
+        case 's': size = atol(optarg); break;
+        case 'f':
+            if (nfriends >= MAX_NODES) { usage(); return 2; }
+            friends[nfriends++] = optarg;
+            break;
+        case 'A': g_accept_requests = 1; break;
         case 'd': data_dir = optarg; break;
         case 'n':
             if (nnodes >= MAX_NODES) { usage(); return 2; }
@@ -142,8 +208,8 @@ int main(int argc, char *argv[])
         usage();
         return 2;
     }
-    if (strcmp(mode, "send") == 0 && (!to || nnodes == 0)) {
-        fprintf(stderr, "send needs --to and at least one --node\n");
+    if ((strcmp(mode, "send") == 0 || strcmp(mode, "sendmsg") == 0) && (!to || nnodes == 0)) {
+        fprintf(stderr, "%s needs --to and at least one --node\n", mode);
         return 2;
     }
 
@@ -179,6 +245,7 @@ int main(int argc, char *argv[])
 
     memset(&cbs, 0, sizeof(cbs));
     cbs.friend_request = on_friend_request;
+    cbs.friend_message = on_friend_message;
 
     w = carrier_new(&opts, &cbs, NULL);
     if (!w) {
@@ -190,6 +257,15 @@ int main(int argc, char *argv[])
     carrier_get_userid(w, userid, sizeof(userid));
     printf("address: %s\n", address);
     printf("userid: %s\n", userid);
+    fflush(stdout);
+
+    // No DHT here, so carrier_accept_friend's readiness check is satisfied by hand.
+    w->is_ready = true;
+    for (i = 0; i < nfriends; i++) {
+        int rc = carrier_accept_friend(w, friends[i]);
+        printf("FRIEND %s rc=%d%s\n", friends[i], rc,
+               rc < 0 && carrier_get_error() == CARRIER_GENERAL_ERROR(ERROR_ALREADY_EXIST) ? " (already)" : "");
+    }
     fflush(stdout);
 
     if (strcmp(mode, "init") == 0) {
@@ -235,6 +311,43 @@ int main(int argc, char *argv[])
         }
         printf("POSTED to=%s hello=%s\n", to, hello);
         fflush(stdout);
+    } else if (strcmp(mode, "sendmsg") == 0) {
+        Packet *cp;
+        uint8_t *data;
+        size_t len;
+        char *body;
+        size_t body_len;
+        int rc;
+
+        if (size > 0) {
+            long k;
+            body_len = (size_t)size;
+            body = malloc(body_len);
+            for (k = 0; k < size; k++)
+                body[k] = (char)('a' + (k * 7 + k / 251) % 26);
+        } else {
+            body_len = strlen(hello);
+            body = strdup(hello);
+        }
+        cp = packet_create(PACKET_TYPE_MESSAGE, NULL);
+        packet_set_raw_data(cp, body, body_len);
+        data = packet_encode(cp, &len);
+        packet_free(cp);
+        if (!data) {
+            fprintf(stderr, "packet_encode failed\n");
+            carrier_kill(w);
+            return 1;
+        }
+        rc = express_enqueue_post_message_with_receipt(w->connector, to, data, len, 1);
+        free(data);
+        if (rc < 0) {
+            fprintf(stderr, "express_enqueue_post_message_with_receipt failed: 0x%x\n", rc);
+            carrier_kill(w);
+            return 1;
+        }
+        printf("POSTEDMSG to=%s len=%zu fnv=%08x\n", to, body_len, fnv1a(body, body_len));
+        fflush(stdout);
+        free(body);
     } else if (strcmp(mode, "pull") == 0) {
         /* carrier_run pulls on its first iteration (do_express_expire);
          * one more explicit pull makes the test independent of that. */
@@ -251,8 +364,10 @@ int main(int argc, char *argv[])
     carrier_kill(w);
     pthread_join(tid, NULL);
 
-    if (strcmp(mode, "pull") == 0)
+    if (strcmp(mode, "pull") == 0) {
         print_state(data_dir);
+        printf("HELD %d\n", count_held(data_dir));
+    }
 
     return 0;
 }
