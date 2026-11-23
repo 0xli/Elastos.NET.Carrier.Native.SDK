@@ -1096,6 +1096,15 @@ CARRIER_API
 void carrier_network_changed(Carrier *carrier);
 
 /**
+ * Ask the run loop to disconnect and pause networking, or reconnect and
+ * resume. The Carrier handle, friends, and identity remain valid. A
+ * suspended node does not poll Express, so resume it on a wake push.
+ * May be called from any thread.
+ */
+CARRIER_API
+void carrier_set_network_suspended(Carrier *carrier, bool suspended);
+
+/**
  * \~English
  * Send a message to a friend over the live session only.
  *

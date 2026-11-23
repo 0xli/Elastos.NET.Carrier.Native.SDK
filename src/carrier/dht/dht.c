@@ -1041,6 +1041,12 @@ bool dht_udp_rebind(DHT *dht)
     return tox_carrier_udp_rebind(dht->tox);
 }
 
+void dht_suspend(DHT *dht, void *context)
+{
+    assert(dht && dht->tox);
+    tox_carrier_suspend(dht->tox, context);
+}
+
 void dht_iterate(DHT *dht, void *context)
 {
     Tox *tox = dht->tox;

@@ -170,6 +170,10 @@ struct Carrier {
     uint64_t net_recovery_wait;
     int net_changed;    /* set by carrier_network_changed(), any thread */
 
+    pthread_mutex_t network_suspend_lock;
+    pthread_cond_t network_resume;
+    bool network_suspended;
+
     int running;
     int quit;
 };

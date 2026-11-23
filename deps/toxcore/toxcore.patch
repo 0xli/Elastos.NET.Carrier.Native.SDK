@@ -181,3 +181,148 @@
  
  /*******************************************************************************
   *
+--- a/toxcore/friend_connection.c
++++ b/toxcore/friend_connection.c
+@@ -900,6 +900,18 @@
+     }
+ }
+
++void friend_connections_disconnect(Friend_Connections *fr_c, void *userdata)
++{
++    for (uint32_t i = 0; i < fr_c->num_cons; ++i) {
++        Friend_Conn *const conn = get_conn(fr_c, i);
++
++        if (conn && conn->crypt_connection_id != -1) {
++            crypto_kill(fr_c->net_crypto, conn->crypt_connection_id);
++            handle_status(fr_c, i, 0, userdata);
++        }
++    }
++}
++
+ /* main friend_connections loop. */
+ void do_friend_connections(Friend_Connections *fr_c, void *userdata)
+ {
+--- a/toxcore/friend_connection.h
++++ b/toxcore/friend_connection.h
+@@ -156,5 +156,6 @@
+
+ /* Free everything related with friend_connections. */
+ void kill_friend_connections(Friend_Connections *fr_c);
++void friend_connections_disconnect(Friend_Connections *fr_c, void *userdata);
+
+ #endif
+--- a/toxcore/TCP_connection.c
++++ b/toxcore/TCP_connection.c
+@@ -762,6 +762,15 @@
+     kill_TCP_connection(tcp_con->connection);
+
+     return wipe_tcp_connection(tcp_c, tcp_connections_number);
++}
++
++/* The friend sessions are already gone. A subsequent bootstrap will
++ * add back the configured relays and discover fresh peer-specific ones. */
++void disconnect_tcp_relays(TCP_Connections *tcp_c)
++{
++    for (size_t i = tcp_c->tcp_connections_length; i > 0; --i) {
++        kill_tcp_relay_connection(tcp_c, i - 1);
++    }
+ }
+
+ static int reconnect_tcp_relay_connection(TCP_Connections *tcp_c, int tcp_connections_number)
+--- a/toxcore/TCP_connection.h
++++ b/toxcore/TCP_connection.h
+@@ -208,6 +208,7 @@
+
+ void do_tcp_connections(TCP_Connections *tcp_c, void *userdata);
+ void kill_tcp_connections(TCP_Connections *tcp_c);
++void disconnect_tcp_relays(TCP_Connections *tcp_c);
+
+ #if defined(CARRIER_BUILD)
+ int get_random_tcp_relay_addr(TCP_Connections *tcp_c, IP_Port *ip_port, uint8_t *public_key);
+--- a/toxcore/net_crypto.c
++++ b/toxcore/net_crypto.c
+@@ -2915,6 +2915,13 @@
+     return ret;
+ }
+
++void net_crypto_disconnect_relays(Net_Crypto *c)
++{
++    pthread_mutex_lock(&c->tcp_mutex);
++    disconnect_tcp_relays(c->tcp_c);
++    pthread_mutex_unlock(&c->tcp_mutex);
++}
++
+ bool crypto_connection_status(const Net_Crypto *c, int crypt_connection_id, bool *direct_connected,
+                               unsigned int *online_tcp_relays)
+ {
+--- a/toxcore/net_crypto.h
++++ b/toxcore/net_crypto.h
+@@ -293,6 +293,7 @@
+  * return 0 on success.
+  */
+ int crypto_kill(Net_Crypto *c, int crypt_connection_id);
++void net_crypto_disconnect_relays(Net_Crypto *c);
+
+ /* return true if connection is valid, false otherwise
+  *
+--- a/toxcore/network.c
++++ b/toxcore/network.c
+@@ -1176,6 +1176,14 @@
+     return 0;
+ }
+
++void networking_suspend(Networking_Core *net)
++{
++    if (sock_valid(net->sock)) {
++        kill_sock(net->sock);
++        net->sock = net_invalid_socket;
++    }
++}
++
+ /* Function to cleanup networking stuff. */
+ void kill_networking(Networking_Core *net)
+ {
+--- a/toxcore/network.h
++++ b/toxcore/network.h
+@@ -542,6 +542,7 @@
+ /* Carrier: see network.c. */
+ bool networking_is_defunct(const Networking_Core *net);
+ int networking_rebind(Networking_Core *net);
++void networking_suspend(Networking_Core *net);
+
+ #ifdef __cplusplus
+ }  // extern "C"
+--- a/toxcore/tox.c
++++ b/toxcore/tox.c
+@@ -821,6 +821,18 @@
+     return done;
+ }
+
++void tox_carrier_suspend(Tox *tox, void *user_data)
++{
++    lock(tox);
++
++    struct Tox_Userdata tox_data = { tox, user_data };
++    friend_connections_disconnect(tox->m->fr_c, &tox_data);
++    net_crypto_disconnect_relays(tox->m->net_crypto);
++    networking_suspend(tox->m->net);
++
++    unlock(tox);
++}
++
+ void tox_iterate(Tox *tox, void *user_data)
+ {
+     lock(tox);
+--- a/toxcore/tox.h
++++ b/toxcore/tox.h
+@@ -1074,6 +1074,10 @@
+  * a new socket is in place.
+  */
+ bool tox_carrier_udp_rebind(Tox *tox);
++
++/* Disconnect the peer sessions and close their sockets. The owner must
++ * stop iterating until it has rebound UDP and added bootstrap relays. */
++void tox_carrier_suspend(Tox *tox, void *user_data);
+
+
+ /*******************************************************************************
