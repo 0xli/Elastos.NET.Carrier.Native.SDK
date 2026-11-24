@@ -301,6 +301,49 @@ static int publish_self_desc(Carrier *w)
     return 0;
 }
 
+/* Copy a peer-supplied string into a fixed array, truncated to fit (at a
+ * UTF-8 character boundary). A peer's profile or friend request is not
+ * trusted to respect the length limits: one over-long field used to abort
+ * the whole process in strcpy (fortify), and because the friend's userinfo
+ * is persisted, it then aborted again on every start (2026-11-24). */
+static void copy_peer_str(char *dst, size_t dst_size, const char *src)
+{
+    size_t n;
+
+    if (!dst_size)
+        return;
+    if (!src)
+        src = "";
+    n = strlen(src);
+    if (n >= dst_size) {
+        n = dst_size - 1;
+        while (n > 0 && ((unsigned char)src[n] & 0xC0) == 0x80)
+            n--;
+    }
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
+/* Compare against what copy_peer_str would store, so a truncated field does
+ * not count as "changed" on every userinfo packet. */
+static bool peer_str_differs(const char *cur, size_t dst_size, const char *src)
+{
+    char tmp[1024];
+
+    if (dst_size > sizeof(tmp))
+        return strcmp(cur, src) != 0;
+    copy_peer_str(tmp, dst_size, src);
+    return strcmp(cur, tmp) != 0;
+}
+
+#define COPY_PEER_FIELD(field, src)                                      \
+    do {                                                                 \
+        if (peer_str_differs(info->field, sizeof(info->field), (src))) { \
+            copy_peer_str(info->field, sizeof(info->field), (src));      \
+            did_changed = true;                                          \
+        }                                                                \
+    } while (0)
+
 static void fill_empty_user_descr(Carrier *w)
 {
     int rc = publish_self_desc(w);
@@ -345,35 +388,17 @@ int unpack_user_descr(const uint8_t *desc, size_t desc_len, CarrierUserInfo *inf
     email  = packet_get_email(cp)  ? packet_get_email(cp) : "";
     region = packet_get_region(cp) ? packet_get_region(cp) : "";
 
-    if (strcmp(info->name, name)) {
-        strcpy(info->name, name);
-        did_changed = true;
-    }
+    COPY_PEER_FIELD(name, name);
 
-    if (strcmp(info->description, descr)) {
-        strcpy(info->description, descr);
-        did_changed = true;
-    }
+    COPY_PEER_FIELD(description, descr);
 
-    if (strcmp(info->gender, gender)) {
-        strcpy(info->gender, gender);
-        did_changed = true;
-    }
+    COPY_PEER_FIELD(gender, gender);
 
-    if (strcmp(info->phone, phone)) {
-        strcpy(info->phone, phone);
-        did_changed = true;
-    }
+    COPY_PEER_FIELD(phone, phone);
 
-    if (strcmp(info->email, email)) {
-        strcpy(info->email, email);
-        did_changed = true;
-    }
+    COPY_PEER_FIELD(email, email);
 
-    if (strcmp(info->region, region)) {
-        strcpy(info->region, region);
-        did_changed = true;
-    }
+    COPY_PEER_FIELD(region, region);
 
     if (info->has_avatar != has_avatar) {
         info->has_avatar = has_avatar;
@@ -407,6 +432,7 @@ int unpack_user_descr(const uint8_t *desc, size_t desc_len, CarrierUserInfo *inf
         TAKE_STR(ext->extra, packet_get_extra);
     }
 #undef TAKE_STR
+#undef COPY_PEER_FIELD
 
     packet_free(cp);
 
@@ -934,7 +960,7 @@ static void apply_extra_data(Carrier *w, const uint8_t *extra_savedata, size_t e
 
         fi = friends_get(w->friends, friend_number);
         if (fi) {
-            strcpy(fi->info.label, label);
+            copy_peer_str(fi->info.label, sizeof(fi->info.label), label);
             deref(fi);
         }
 
@@ -1961,11 +1987,8 @@ void carrier_notify_friend_request(const uint8_t *public_key, const uint8_t* gre
     desc  = packet_get_descr(cp) ? packet_get_descr(cp) : "";
     hello = packet_get_hello(cp) ? packet_get_hello(cp) : "";
 
-    assert(strlen(name) < sizeof(ui.name));
-    assert(strlen(desc) < sizeof(ui.description));
-
-    strcpy(ui.name, name);
-    strcpy(ui.description, desc);
+    copy_peer_str(ui.name, sizeof(ui.name), name);
+    copy_peer_str(ui.description, sizeof(ui.description), desc);
 
     /* Requester's avatar (friendreq gender + avatar_url, 2026-11-01). The
      * punk id goes out on the callback as info->gender; the URL is kept for
@@ -2356,6 +2379,10 @@ void handle_friend_bulkmsg(Carrier *w, uint32_t friend_number, Packet *cp)
     deref(fi);
 
     name = packet_get_extension(cp);
+    if (name && strlen(name) > CARRIER_MAX_EXTENSION_NAME_LEN) {
+        vlogW("Carrier: over-long extension name from %s, dropped.", friendid);
+        return;
+    }
     data = packet_get_raw_data(cp);
     len  = packet_get_raw_data_length(cp);
     tid  = packet_get_tid(cp);
@@ -2460,6 +2487,10 @@ void handle_invite_request(Carrier *w, uint32_t friend_number, Packet *cp)
     bundle = packet_get_bundle(cp);
     bundle_len = bundle ? strlen(bundle) + 1 : 0;
     name = packet_get_extension(cp);
+    if (name && strlen(name) > CARRIER_MAX_EXTENSION_NAME_LEN) {
+        vlogW("Carrier: over-long extension name from %s, dropped.", friendid);
+        return;
+    }
     data = packet_get_raw_data(cp);
     len  = packet_get_raw_data_length(cp);
     tid  = packet_get_tid(cp);
@@ -2590,6 +2621,10 @@ void handle_invite_response(Carrier *w, uint32_t friend_number, Packet *cp)
     bundle = packet_get_bundle(cp);
     bundle_len = bundle ? strlen(bundle) + 1 : 0;
     name = packet_get_extension(cp);
+    if (name && strlen(name) > CARRIER_MAX_EXTENSION_NAME_LEN) {
+        vlogW("Carrier: over-long extension name from %s, dropped.", friendid);
+        return;
+    }
     totalsz = packet_get_totalsz(cp);
     status = packet_get_status(cp);
     if (status) {
