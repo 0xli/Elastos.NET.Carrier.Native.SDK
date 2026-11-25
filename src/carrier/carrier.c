@@ -1132,13 +1132,26 @@ static int store_persistence_data(Carrier *w)
 
     assert(w);
 
+    /* Cleared before the snapshot is taken: a change that lands after this
+     * line marks it again and gets its own write. A failed write is retried
+     * by the caller (do_persistence_expire) or by the next save. */
+    w->persist_dirty = 0;
+
+    /* Held from the snapshot to the rename, so that two saves from different
+     * threads reach the file in the order their snapshots were taken (an
+     * older image must not land on top of a newer one). */
+    pthread_mutex_lock(&lock);
+
     dht_data_len = dht_get_savedata_size(&w->dht);
     extra_data_len = get_extra_savedata_size(w);
     total_len = 256 + ROUND256(dht_data_len) + ROUND256(extra_data_len);
 
     buf = (uint8_t *)calloc(total_len, 1);
-    if (!buf)
+    if (!buf) {
+        pthread_mutex_unlock(&lock);
+        w->persist_dirty = 1;
         return CARRIER_GENERAL_ERROR(ERROR_OUT_OF_MEMORY);
+    }
 
     pos = buf;
     val = htonl(PERSISTENCE_MAGIC);
@@ -1164,13 +1177,13 @@ static int store_persistence_data(Carrier *w)
     pos = buf + 256;
     sha256(pos, total_len - 256, buf + (sizeof(uint32_t) * 4), SHA256_BYTES);
 
-    pthread_mutex_lock(&lock);
-
     rc = mkdirs(w->pref.data_location, S_IRWXU);
     if (rc < 0) {
+        rc = CARRIER_SYS_ERROR(errno);
         free(buf);
         pthread_mutex_unlock(&lock);
-        return CARRIER_SYS_ERROR(errno);
+        w->persist_dirty = 1;
+        return rc;
     }
 
     filename = (char *)alloca(strlen(w->pref.data_location) + strlen(data_filename) + 4);
@@ -1178,36 +1191,86 @@ static int store_persistence_data(Carrier *w)
     journal_filename = (char *)alloca(strlen(w->pref.data_location) + strlen(data_filename) + 16);
     sprintf(journal_filename, "%s/%s.journal", w->pref.data_location, data_filename);
 
+    /* The whole image goes to the journal and is synced before the data file
+     * is touched. A crash while the journal is being written leaves a short
+     * journal, which the loader rejects (size and SHA-256) in favour of the
+     * intact data file; a crash after the sync leaves a complete journal,
+     * which the loader prefers. */
     fd = open(journal_filename, O_RDWR | O_CREAT | O_TRUNC | O_BINARY, S_IRUSR | S_IWUSR);
     if (fd < 0) {
+        rc = CARRIER_SYS_ERROR(errno);
         free(buf);
         pthread_mutex_unlock(&lock);
-        return CARRIER_SYS_ERROR(errno);
+        w->persist_dirty = 1;
+        return rc;
     }
 
-    if (write(fd, buf, total_len) != total_len) {
+    if (write(fd, buf, total_len) != total_len || fsync(fd) < 0) {
+        rc = CARRIER_SYS_ERROR(errno);
         close(fd);
         remove(journal_filename);
+        free(buf);
         pthread_mutex_unlock(&lock);
-        return CARRIER_SYS_ERROR(errno);
-    }
-
-    if (fsync(fd) < 0) {
-        close(fd);
-        remove(journal_filename);
-        pthread_mutex_unlock(&lock);
-        return CARRIER_SYS_ERROR(errno);
+        w->persist_dirty = 1;
+        return rc;
     }
 
     close(fd);
     free(buf);
 
-    remove(filename);
-    rename(journal_filename, filename);
+#if defined(_WIN32) || defined(_WIN64)
+    remove(filename);   // rename() does not replace an existing file there
+#endif
+    if (rename(journal_filename, filename) < 0)
+        vlogW("Carrier: could not move the data journal into place (%d); "
+              "it is loaded from the journal next time.", errno);
 
     pthread_mutex_unlock(&lock);
 
     return 0;
+}
+
+/* Seconds between a friend's userinfo changing and carrier.data being
+ * rewritten. The first change of a burst sets the time and later ones do not
+ * move it, so any number of changes costs one write per interval. */
+#define PERSIST_DEBOUNCE_SECONDS    5
+
+/*
+ * A friend's userinfo (name, description, ... client and profile extension)
+ * lives in the DHT layer's save data, and that was written only when a friend
+ * was added or removed and on a clean exit. A process that was killed came
+ * back with every friend's previous, or empty, userinfo.
+ */
+static void schedule_persistence(Carrier *w)
+{
+    if (w->persist_dirty)
+        return;
+
+    gettimeofday_elapsed(&w->persist_expiretime, PERSIST_DEBOUNCE_SECONDS);
+    w->persist_dirty = 1;
+}
+
+static void do_persistence_expire(Carrier *w)
+{
+    struct timeval now;
+    int rc;
+
+    if (!w->persist_dirty)
+        return;
+
+    gettimeofday(&now, NULL);
+    if (timercmp(&now, &w->persist_expiretime, <))
+        return;
+
+    rc = store_persistence_data(w);
+    if (rc < 0) {
+        vlogW("Carrier: saving friend information failed (%x), will retry.", rc);
+        gettimeofday_elapsed(&w->persist_expiretime, PERSIST_DEBOUNCE_SECONDS);
+        w->persist_dirty = 1;
+        return;
+    }
+
+    vlogD("Carrier: friend information saved.");
 }
 
 #ifdef _MSC_VER
@@ -1755,6 +1818,8 @@ void notify_friend_description_cb(uint32_t friend_number, const uint8_t *descr,
         deref(fi);
         return;
     }
+
+    schedule_persistence(w);
 
     memcpy(&_fi, &fi->info, sizeof(_fi));
     if (w->callbacks.friend_info)
@@ -3138,6 +3203,7 @@ int carrier_run(Carrier *w, int interval)
         do_bulkmsgs_expire(w->bulkmsgs);
         do_express_expire(w);
         do_unconfirmed_expire(w);
+        do_persistence_expire(w);
 
         if (idle_interval > 0)
             notify_idle(w);
