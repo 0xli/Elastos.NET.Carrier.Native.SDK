@@ -48,3 +48,16 @@ target_link_libraries(friendreq_test
     ${CMAKE_CURRENT_BINARY_DIR}/../../src/carrier/libcarrier.a
     cjson libcurl crystal toxcore flatccrt sodium ${SYSTEM_LIBS})
 add_dependencies(friendreq_test carrier0)
+
+# peerstr_test: over-long strings in a peer profile / friend request are
+# truncated instead of aborting the process (2026-11-24). White-box: compiles
+# carrier.c in, so it needs the same include paths as friendreq_test.
+add_executable(peerstr_test peerstr_test.c)
+target_include_directories(peerstr_test PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/../../src/carrier
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/carrier/dht)
+target_compile_definitions(peerstr_test PRIVATE CRYSTAL_STATIC)
+target_link_libraries(peerstr_test
+    ${CMAKE_CURRENT_BINARY_DIR}/../../src/carrier/libcarrier.a
+    cjson libcurl crystal toxcore flatccrt sodium ${SYSTEM_LIBS})
+add_dependencies(peerstr_test carrier0)
