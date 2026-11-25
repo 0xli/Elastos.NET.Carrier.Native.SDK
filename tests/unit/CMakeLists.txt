@@ -74,3 +74,16 @@ target_link_libraries(selfinfo_test
     ${CMAKE_CURRENT_BINARY_DIR}/../../src/carrier/libcarrier.a
     cjson libcurl crystal toxcore flatccrt sodium ${SYSTEM_LIBS})
 add_dependencies(selfinfo_test carrier0)
+
+# friendinfo_persist_test: a friend's userinfo is saved when it changes
+# (debounced), so a restart that was not a clean exit still has it. Two
+# carriers on loopback; white-box like peerstr_test.
+add_executable(friendinfo_persist_test friendinfo_persist_test.c)
+target_include_directories(friendinfo_persist_test PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/../../src/carrier
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/carrier/dht)
+target_compile_definitions(friendinfo_persist_test PRIVATE CRYSTAL_STATIC)
+target_link_libraries(friendinfo_persist_test
+    ${CMAKE_CURRENT_BINARY_DIR}/../../src/carrier/libcarrier.a
+    cjson libcurl crystal toxcore flatccrt sodium ${SYSTEM_LIBS})
+add_dependencies(friendinfo_persist_test carrier0)

@@ -146,6 +146,11 @@ struct Carrier {
     struct timeval express_expiretime;
     struct timeval unconfirmed_expiretime;
 
+    /* A friend's userinfo changed since carrier.data was last written; it is
+     * written again at persist_expiretime (see schedule_persistence). */
+    volatile int persist_dirty;
+    struct timeval persist_expiretime;
+
     linked_hashtable_t *tcallbacks;
     linked_hashtable_t *thistory;
 
