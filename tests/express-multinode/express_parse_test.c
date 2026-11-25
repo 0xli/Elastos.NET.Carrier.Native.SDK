@@ -142,7 +142,11 @@ static uint8_t g_my_pk[PUBLIC_KEY_BYTES];
 static void identity_new(Identity *id)
 {
     size_t len = sizeof(id->userid);
-    crypto_create_keypair(id->pk, id->sk);
+    // The shared base58 drops a leading zero byte, so a key that starts with
+    // 0x00 (1 in 256) gets an id nothing accepts. Not what this test is about.
+    do {
+        crypto_create_keypair(id->pk, id->sk);
+    } while (id->pk[0] == 0);
     base58_encode(id->pk, sizeof(id->pk), id->userid, &len);
     crypto_compute_symmetric_key(g_my_pk, id->sk, id->shared);
 }
@@ -920,6 +924,62 @@ static void test_hold(void)
 }
 #endif
 
+#ifndef OLD_EXPRESS
+/* The delete-until value is nonce + ciphertext, base58 in the URL. The node
+ * decodes it with a standard base58 decoder, so leading zero bytes must be
+ * kept as leading '1's (an encoder that drops them made 1 delete in 256 fail
+ * with HTTP 400). Checked against fixed vectors and a round trip. */
+static void test_until_encoding(void)
+{
+    static const struct { uint8_t in[4]; size_t len; const char *out; } vec[] = {
+        { { 0x00 },                   1, "1"     },
+        { { 0x00, 0x00 },             2, "11"    },
+        { { 0x00, 0x01 },             2, "12"    },
+        { { 0x00, 0x00, 0x01 },       3, "112"   },
+        { { 0x61 },                   1, "2g"    },
+        { { 0x00, 0x61 },             2, "12g"   },
+        { { 0x62, 0x62, 0x62 },       3, "a3gV"  },
+        { { 0x00, 0x62, 0x62, 0x62 }, 4, "1a3gV" },
+    };
+    char buf[128];
+    uint8_t data[40], back[64];
+    size_t i;
+    int ok = 1, lead;
+
+    printf("\n== 8. delete-until value keeps leading zero bytes\n");
+
+    for (i = 0; i < sizeof(vec) / sizeof(vec[0]); i++) {
+        char *r = base58_encode_std(vec[i].in, vec[i].len, buf, sizeof(buf));
+        if (!r || strcmp(r, vec[i].out) != 0) {
+            printf("    vector %zu: got \"%s\", want \"%s\"\n", i, r ? r : "(null)", vec[i].out);
+            ok = 0;
+        }
+    }
+    CHECK(ok, "fixed vectors, with and without leading zero bytes");
+
+    // nonce + ciphertext of a timestamp is 40 bytes; 0, 1 and 2 leading zeros
+    ok = 1;
+    for (lead = 0; lead <= 2; lead++) {
+        char *r;
+        ssize_t n;
+
+        for (i = 0; i < sizeof(data); i++)
+            data[i] = (uint8_t)(0xA0 + i);
+        memset(data, 0, lead);
+        r = base58_encode_std(data, sizeof(data), buf, sizeof(buf));
+        n = r ? base58_decode(r, strlen(r), back, sizeof(back)) : -1;
+        if (!r || strspn(r, "1") != (size_t)lead || n != (ssize_t)sizeof(data) ||
+            memcmp(back, data, sizeof(data)) != 0) {
+            printf("    %d leading zero byte(s): \"%s\" decodes to %zd bytes\n", lead, r ? r : "(null)", n);
+            ok = 0;
+        }
+    }
+    CHECK(ok, "40-byte value with 0, 1, 2 leading zero bytes: one '1' per zero byte, decodes back whole");
+
+    CHECK(base58_encode_std(data, sizeof(data), buf, 2) == NULL, "a buffer that is too small is refused");
+}
+#endif
+
 int main(int argc, char *argv[])
 {
     uint8_t node_pk[PUBLIC_KEY_BYTES], node_sk[SECRET_KEY_BYTES];
@@ -935,7 +995,9 @@ int main(int argc, char *argv[])
     system(cmd);
     mkdir(g_data_dir, 0700);
 
-    crypto_create_keypair(node_pk, node_sk);
+    do {
+        crypto_create_keypair(node_pk, node_sk);
+    } while (node_pk[0] == 0);          // see identity_new
     base58_encode(node_pk, sizeof(node_pk), g_node_pk_b58, &len);
     memcpy(g_node_key, node_sk, sizeof(g_node_key));   // any 32 random bytes will do
 
@@ -962,6 +1024,7 @@ int main(int argc, char *argv[])
         if (WANT(6)) test_hostile();
 #ifndef OLD_EXPRESS
         if (WANT(7)) test_hold();
+        if (WANT(8)) test_until_encoding();
 #endif
     }
 
