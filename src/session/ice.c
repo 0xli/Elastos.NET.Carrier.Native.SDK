@@ -1292,6 +1292,16 @@ static int ice_session_apply_remote_sdp(CarrierSession *base,
             nonce = p_sdp->attr[i]->value;
     }
 
+    /* The remote SDP is the peer's text: its ICE credentials must fit the
+     * fixed fields they are stored in. */
+    if (ufrag.slen < 0 || pwd.slen < 0 ||
+        (size_t)ufrag.slen >= sizeof(((IceHandler *)0)->remote.ufrag) ||
+        (size_t)pwd.slen >= sizeof(((IceHandler *)0)->remote.pwd)) {
+        vlogE("Session: Remote ICE credentials too long.");
+        pj_pool_release(pool);
+        return CARRIER_GENERAL_ERROR(ERROR_INVALID_SDP);
+    }
+
     if (nonce.ptr && session->role != PJ_ICE_SESS_ROLE_CONTROLLING)
         crypto_nonce_from_str(base->nonce, nonce.ptr, nonce.slen);
 
@@ -1325,10 +1335,18 @@ rescan:
         pjmedia_sdp_media *media = p_sdp->media[media_index];
         pjmedia_sdp_conn *conn = media->conn;
 
+        if (!conn || media->desc.fmt_count < 1) {
+            pj_pool_release(pool);
+            deref(stream);
+            return CARRIER_GENERAL_ERROR(ERROR_INVALID_SDP);
+        }
+
+        /* remote was zeroed above and both lengths were checked against the
+         * field sizes, so the copies stay terminated. */
         if (ufrag.ptr)
-            strncpy(handler->remote.ufrag, ufrag.ptr, ufrag.slen);
+            memcpy(handler->remote.ufrag, ufrag.ptr, ufrag.slen);
         if (pwd.ptr)
-            strncpy(handler->remote.pwd, pwd.ptr, pwd.slen);
+            memcpy(handler->remote.pwd, pwd.ptr, pwd.slen);
 
         if ((pj_strchr(&conn->addr, ':')-conn->addr.ptr) <= conn->addr.slen)
             af = pj_AF_INET6();
@@ -1362,10 +1380,16 @@ rescan:
                 int comp_id, prio, port, rport;
                 int cnt;
                 char foundation[32], transport[12], ipaddr[80], type[32], raddr[80];
-                pj_ice_sess_cand *cand = &handler->remote.cand[cand_index];
+                pj_ice_sess_cand *cand;
 
+                /* No room for more candidates than the fixed table holds. */
+                if (cand_index >= PJ_ICE_ST_MAX_CAND)
+                    break;
+                cand = &handler->remote.cand[cand_index];
+
+                /* Field widths leave room for the terminator. */
                 cnt = sscanf(media->attr[i]->value.ptr,
-                             "%32s %d %12s %d %80s %d typ %32s raddr %80s rport %d",
+                             "%31s %d %11s %d %79s %d typ %31s raddr %79s rport %d",
                              foundation,
                              &comp_id,
                              transport,
@@ -1375,7 +1399,8 @@ rescan:
                              type,
                              raddr,
                              &rport);
-                if (cnt != 7 && cnt != 9) {
+                if ((cnt != 7 && cnt != 9) ||
+                    comp_id < 1 || comp_id > PJ_ICE_MAX_COMP) {
                     memset(&handler->remote, 0, sizeof(handler->remote));
                     pj_pool_release(pool);
                     deref(stream);

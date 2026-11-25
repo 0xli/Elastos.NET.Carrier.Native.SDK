@@ -102,10 +102,8 @@ void sessionreq_callback(Carrier *w, const char *from, const char *bundle,
     CarrierFileTransferInfo *fti = NULL;
     FileRequest *fr;
 
-    if (!bundle && strncmp(bundle, bundle_prefix, strlen(bundle_prefix))) {
-        assert(0);
+    if (!bundle || strncmp(bundle, bundle_prefix, strlen(bundle_prefix)))
         return;
-    }
 
     if (!ext->connect_callback) {
         vlogE(TAG "no specific callback to handle filetransfer connection "
@@ -136,7 +134,7 @@ void sessionreq_callback(Carrier *w, const char *from, const char *bundle,
     fr->sdp = (char *)(fr + 1);
     fr->sdp_len = len;
     memcpy(fr->sdp, sdp, len);
-    strcpy(fr->from, from);
+    snprintf(fr->from, sizeof(fr->from), "%s", from);
 
     filereqs_put(ext->filereqs, fr);
     deref(fr);
@@ -260,8 +258,8 @@ static void sender_state_changed(CarrierFileTransfer *ft, CarrierStreamState sta
             return;
 
         if (item->state == FileTransferState_standby)
-            sprintf(bundle, "%s %s %s %llu", bundle_prefix, item->filename,
-                    item->fileid, _LLUV(item->filesz));
+            snprintf(bundle, sizeof(bundle), "%s %s %s %llu", bundle_prefix,
+                     item->filename, item->fileid, _LLUV(item->filesz));
         else
             strcpy(bundle, bundle_prefix);
 
@@ -301,8 +299,8 @@ static void sender_state_changed(CarrierFileTransfer *ft, CarrierStreamState sta
         if (!standby)
             return;
 
-        sprintf(bundle, "%s %s %s %llu", bundle_prefix, item->filename,
-                item->fileid, _LLUV(item->filesz));
+        snprintf(bundle, sizeof(bundle), "%s %s %s %llu", bundle_prefix,
+                 item->filename, item->fileid, _LLUV(item->filesz));
 
         item->channel = carrier_stream_open_channel(ft->session, ft->stream, bundle);
         if (item->channel < 0) {
@@ -870,7 +868,9 @@ CarrierFileTransfer *carrier_filetransfer_new(Carrier *w, const char *address,
     }
 
     if (fileinfo) {
-        if ((*fileinfo->fileid && !carrier_id_is_valid(fileinfo->fileid)) ||
+        if (!memchr(fileinfo->filename, 0, sizeof(fileinfo->filename)) ||
+            !memchr(fileinfo->fileid, 0, sizeof(fileinfo->fileid)) ||
+            (*fileinfo->fileid && !carrier_id_is_valid(fileinfo->fileid)) ||
             !*fileinfo->filename || !fileinfo->size) {
             carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
             return NULL;
@@ -928,7 +928,7 @@ CarrierFileTransfer *carrier_filetransfer_new(Carrier *w, const char *address,
         return NULL;
     }
 
-    strcpy(ft->address, address);
+    snprintf(ft->address, sizeof(ft->address), "%s", address);
     ft->ext = ext;
     ft->stream = -1;
     ft->stream_callbacks = &ext->stream_callbacks;
@@ -1121,7 +1121,9 @@ int carrier_filetransfer_add(CarrierFileTransfer *ft, const CarrierFileTransferI
         return -1;
     }
 
-    if (!*fileinfo->filename || !fileinfo->size) {
+    if (!memchr(fileinfo->filename, 0, sizeof(fileinfo->filename)) ||
+        !memchr(fileinfo->fileid, 0, sizeof(fileinfo->fileid)) ||
+        !*fileinfo->filename || !fileinfo->size) {
         carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
         return -1;
     }
@@ -1172,8 +1174,8 @@ int carrier_filetransfer_add(CarrierFileTransfer *ft, const CarrierFileTransferI
     item->filesz = fileinfo->size;
     item->userdata = fileinfo->userdata;
 
-    sprintf(cookie, "%s %s %s %llu", bundle_prefix, fileinfo->filename,
-            fileid, _LLUV(item->filesz));
+    snprintf(cookie, sizeof(cookie), "%s %s %s %llu", bundle_prefix,
+             fileinfo->filename, fileid, _LLUV(item->filesz));
 
     item->channel = carrier_stream_open_channel(ft->session, ft->stream, cookie);
     if (item->channel < 0) {

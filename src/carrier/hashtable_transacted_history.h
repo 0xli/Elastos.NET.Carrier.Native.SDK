@@ -32,7 +32,7 @@
 
 typedef struct HistoryItem {
     linked_hash_entry_t he;
-    char key[CARRIER_MAX_ID_LEN + CARRIER_MAX_EXTENSION_NAME_LEN + 4];
+    char key[CARRIER_MAX_ID_LEN + CARRIER_MAX_EXTENSION_NAME_LEN + 8];
     int64_t tid;
     void *user_data;
 } HistoryItem;
@@ -68,7 +68,7 @@ void transaction_history_put_invite(linked_hashtable_t *thistory,
     assert(thistory && userid && tid);
 
     item = rc_alloc(sizeof(HistoryItem), NULL);
-    sprintf(item->key, "ir_%s", userid);
+    snprintf(item->key, sizeof(item->key), "ir_%s", userid);
     item->tid = tid;
 
     item->he.data = item;
@@ -84,11 +84,11 @@ int64_t transaction_history_get_invite(linked_hashtable_t *thistory, const char 
 {
     int64_t val = 0;
     HistoryItem *item;
-    char key[CARRIER_MAX_ID_LEN + CARRIER_MAX_EXTENSION_NAME_LEN + 4];
+    char key[CARRIER_MAX_ID_LEN + CARRIER_MAX_EXTENSION_NAME_LEN + 8];
 
     assert(thistory && userid);
 
-    sprintf(key, "ir_%s", userid);
+    snprintf(key, sizeof(key), "ir_%s", userid);
     item = linked_hashtable_get(thistory, key, strlen(key));
     if (item) {
         val = item->tid;
@@ -101,11 +101,11 @@ int64_t transaction_history_get_invite(linked_hashtable_t *thistory, const char 
 static inline
 void transaction_history_remove_invite(linked_hashtable_t *thistory, const char *userid)
 {
-    char key[CARRIER_MAX_ID_LEN  + CARRIER_MAX_EXTENSION_NAME_LEN + 4];
+    char key[CARRIER_MAX_ID_LEN + CARRIER_MAX_EXTENSION_NAME_LEN + 8];
 
     assert(thistory && userid);
 
-    sprintf(key, "ir_%s", userid);
+    snprintf(key, sizeof(key), "ir_%s", userid);
     deref(linked_hashtable_remove(thistory, key, strlen(key)));
 }
 

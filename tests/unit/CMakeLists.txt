@@ -61,3 +61,16 @@ target_link_libraries(peerstr_test
     ${CMAKE_CURRENT_BINARY_DIR}/../../src/carrier/libcarrier.a
     cjson libcurl crystal toxcore flatccrt sodium ${SYSTEM_LIBS})
 add_dependencies(peerstr_test carrier0)
+
+# selfinfo_test: bounded self info -- what the application hands in (self
+# info, client info, profile extension, ids, addresses) is length-checked
+# before it is copied. White-box like peerstr_test.
+add_executable(selfinfo_test selfinfo_test.c)
+target_include_directories(selfinfo_test PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/../../src/carrier
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/carrier/dht)
+target_compile_definitions(selfinfo_test PRIVATE CRYSTAL_STATIC)
+target_link_libraries(selfinfo_test
+    ${CMAKE_CURRENT_BINARY_DIR}/../../src/carrier/libcarrier.a
+    cjson libcurl crystal toxcore flatccrt sodium ${SYSTEM_LIBS})
+add_dependencies(selfinfo_test carrier0)

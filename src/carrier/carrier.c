@@ -112,6 +112,10 @@ static bool is_valid_key(const char *key)
     char result[DHT_PUBLIC_KEY_SIZE];
     ssize_t len;
 
+    /* An id is copied into char[CARRIER_MAX_ID_LEN + 1] all over. */
+    if (strnlen(key, CARRIER_MAX_ID_LEN + 1) > CARRIER_MAX_ID_LEN)
+        return false;
+
     len = base58_decode(key, strlen(key), result, sizeof(result));
     return len == DHT_PUBLIC_KEY_SIZE;
 }
@@ -145,6 +149,9 @@ static bool is_valid_address(const char *address)
     uint16_t check, checksum;
     ssize_t len;
 
+    if (strnlen(address, CARRIER_MAX_ADDRESS_LEN + 1) > CARRIER_MAX_ADDRESS_LEN)
+        return false;
+
     len = base58_decode(address, strlen(address), addr, sizeof(addr));
     if (len != DHT_ADDRESS_SIZE)
         return false;
@@ -172,7 +179,8 @@ char *carrier_get_id_by_address(const char *address, char *userid, size_t len)
     char *ret_userid;
     size_t userid_len = CARRIER_MAX_ID_LEN + 1;
 
-    if (len <= CARRIER_MAX_ID_LEN) {
+    if (!address || !userid || len <= CARRIER_MAX_ID_LEN ||
+        strnlen(address, CARRIER_MAX_ADDRESS_LEN + 1) > CARRIER_MAX_ADDRESS_LEN) {
         carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
         return NULL;
     }
@@ -323,6 +331,29 @@ static void copy_peer_str(char *dst, size_t dst_size, const char *src)
     memcpy(dst, src, n);
     dst[n] = '\0';
 }
+
+/* Copy one fixed-size string field of a struct the application handed in.
+ * A language binding may have copied a longer string into the field, so it
+ * can arrive without a terminator: read it with a bound, and truncate like
+ * copy_peer_str. Returns true when the value did not fit. */
+static bool copy_fixed_field(char *dst, size_t dst_size,
+                             const char *src, size_t src_size)
+{
+    size_t n = strnlen(src, src_size);
+    bool cut = (n >= dst_size);
+
+    if (cut) {
+        n = dst_size - 1;
+        while (n > 0 && ((unsigned char)src[n] & 0xC0) == 0x80)
+            n--;
+    }
+    memcpy(dst, src, n);
+    memset(dst + n, 0, dst_size - n);
+    return cut;
+}
+
+/* True when a fixed-size string field holds a terminated string. */
+#define FIELD_TERMINATED(field) (memchr((field), 0, sizeof(field)) != NULL)
 
 /* Compare against what copy_peer_str would store, so a truncated field does
  * not count as "changed" on every userinfo packet. */
@@ -1907,11 +1938,11 @@ static void remember_friend_request_ext(Carrier *w, const char *userid,
         w->freq_ext_next = (w->freq_ext_next + 1) % CARRIER_FRIEND_REQUEST_EXT_SLOTS;
     }
     memset(slot, 0, sizeof(*slot));
-    strcpy(slot->userid, userid);
+    copy_peer_str(slot->userid, sizeof(slot->userid), userid);
     if (gender)
-        strcpy(slot->gender, gender);
+        copy_peer_str(slot->gender, sizeof(slot->gender), gender);
     if (avatar_url)
-        strcpy(slot->avatar_url, avatar_url);
+        copy_peer_str(slot->avatar_url, sizeof(slot->avatar_url), avatar_url);
     pthread_mutex_unlock(&w->freq_ext_lock);
 }
 
@@ -1930,7 +1961,8 @@ int carrier_get_friend_request_profile_ext(Carrier *w, const char *userid,
     pthread_mutex_lock(&w->freq_ext_lock);
     for (i = 0; i < CARRIER_FRIEND_REQUEST_EXT_SLOTS; i++) {
         if (!strcmp(w->freq_ext[i].userid, userid)) {
-            strcpy(ext->avatar_url, w->freq_ext[i].avatar_url);
+            copy_peer_str(ext->avatar_url, sizeof(ext->avatar_url),
+                          w->freq_ext[i].avatar_url);
             pthread_mutex_unlock(&w->freq_ext_lock);
             return 0;
         }
@@ -1999,7 +2031,7 @@ void carrier_notify_friend_request(const uint8_t *public_key, const uint8_t* gre
         const char *avatar_url = packet_get_avatar_url(cp);
 
         if (gender && strlen(gender) <= CARRIER_MAX_GENDER_LEN)
-            strcpy(ui.gender, gender);
+            copy_peer_str(ui.gender, sizeof(ui.gender), gender);
         else
             gender = NULL;
         if (avatar_url && strlen(avatar_url) > CARRIER_MAX_AVATAR_URL_LEN)
@@ -2629,6 +2661,8 @@ void handle_invite_response(Carrier *w, uint32_t friend_number, Packet *cp)
     status = packet_get_status(cp);
     if (status) {
         reason = packet_get_reason(cp);
+        if (!reason)
+            reason = "";
         reason_len = strlen(reason) + 1;
     } else {
         data = packet_get_raw_data(cp);
@@ -3120,9 +3154,9 @@ int carrier_set_client_info(Carrier *w, const CarrierClientInfo *info)
     int rc;
 
     if (!w || !info ||
-        strlen(info->platform) > CARRIER_MAX_PLATFORM_LEN ||
-        strlen(info->os_version) > CARRIER_MAX_OS_VERSION_LEN ||
-        strlen(info->app_version) > CARRIER_MAX_APP_VERSION_LEN) {
+        !FIELD_TERMINATED(info->platform) ||
+        !FIELD_TERMINATED(info->os_version) ||
+        !FIELD_TERMINATED(info->app_version)) {
         carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
         return -1;
     }
@@ -3193,10 +3227,10 @@ int carrier_set_self_profile_ext(Carrier *w, const CarrierProfileExt *ext)
     int rc;
 
     if (!w || !ext ||
-        strlen(ext->avatar_url) > CARRIER_MAX_AVATAR_URL_LEN ||
-        strlen(ext->url) > CARRIER_MAX_URL_LEN ||
-        strlen(ext->ens) > CARRIER_MAX_ENS_LEN ||
-        strlen(ext->extra) > CARRIER_MAX_PROFILE_EXTRA_LEN) {
+        !FIELD_TERMINATED(ext->avatar_url) ||
+        !FIELD_TERMINATED(ext->url) ||
+        !FIELD_TERMINATED(ext->ens) ||
+        !FIELD_TERMINATED(ext->extra)) {
         carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
         return -1;
     }
@@ -3370,16 +3404,37 @@ int carrier_set_self_info(Carrier *w, const CarrierUserInfo *info)
     uint8_t *data;
     size_t data_len;
     bool did_changed = false;
+    bool cut = false;
+    CarrierUserInfo ui;
 
     if (!w || !info) {
         carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
         return -1;
     }
 
-    if (strcmp(info->userid, w->me.userid) != 0) {
+    if (strncmp(info->userid, w->me.userid, sizeof(info->userid)) != 0) {
         carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
         return -1;
     }
+
+    /* Work on a bounded copy: a field of the caller's struct that is over
+     * its limit (so not terminated inside its array) is truncated, never
+     * read or copied past its end. */
+    memset(&ui, 0, sizeof(ui));
+    copy_peer_str(ui.userid, sizeof(ui.userid), w->me.userid);
+    ui.has_avatar = info->has_avatar;
+#define SELF_FIELD(field) \
+    cut |= copy_fixed_field(ui.field, sizeof(ui.field), info->field, sizeof(info->field))
+    SELF_FIELD(name);
+    SELF_FIELD(description);
+    SELF_FIELD(gender);
+    SELF_FIELD(phone);
+    SELF_FIELD(email);
+    SELF_FIELD(region);
+#undef SELF_FIELD
+    if (cut)
+        vlogW("Carrier: self info field over its length limit, truncated.");
+    info = &ui;
 
     cp = packet_create(PACKET_TYPE_USERINFO, NULL);
     if (!cp) {
@@ -3438,12 +3493,12 @@ int carrier_set_self_info(Carrier *w, const CarrierUserInfo *info)
            value of status message (1007).
          */
         w->me.has_avatar = info->has_avatar;
-        strcpy(w->me.name, info->name);
-        strcpy(w->me.description, info->description);
-        strcpy(w->me.gender, info->gender);
-        strcpy(w->me.phone, info->phone);
-        strcpy(w->me.email, info->email);
-        strcpy(w->me.region, info->region);
+        copy_peer_str(w->me.name, sizeof(w->me.name), info->name);
+        copy_peer_str(w->me.description, sizeof(w->me.description), info->description);
+        copy_peer_str(w->me.gender, sizeof(w->me.gender), info->gender);
+        copy_peer_str(w->me.phone, sizeof(w->me.phone), info->phone);
+        copy_peer_str(w->me.email, sizeof(w->me.email), info->email);
+        copy_peer_str(w->me.region, sizeof(w->me.region), info->region);
         dht_self_set_desc(&w->dht, data, data_len);
 
         store_persistence_data(w);
@@ -3609,7 +3664,7 @@ int carrier_set_friend_label(Carrier *w,
     }
     assert(!strcmp(friendid, fi->info.user_info.userid));
 
-    strcpy(fi->info.label, label ? label : "");
+    copy_peer_str(fi->info.label, sizeof(fi->info.label), label);
 
     deref(fi);
 
@@ -4025,7 +4080,9 @@ static int send_friend_message_internal_ex(Carrier *w, const char *to,
     uint32_t friend_number;
     int rc;
 
-    if (!w || !to || !msg || !len || len > CARRIER_MAX_APP_BULKMSG_LEN) {
+    if (!w || !to || !msg || !len || len > CARRIER_MAX_APP_BULKMSG_LEN ||
+        strnlen(to, CARRIER_MAX_ID_LEN + CARRIER_MAX_USER_NAME_LEN + 2) >
+            CARRIER_MAX_ID_LEN + 1 + CARRIER_MAX_USER_NAME_LEN) {
         carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
         return -1;
     }
@@ -4294,6 +4351,14 @@ int send_message_with_receipt_internal(Carrier *w, const char *to,
     uint32_t _msgid;
     int rc;
 
+    /* Checked here, before `to` and the message are copied into the
+     * unconfirmed item; the send below checks the rest. */
+    if (!w || !to || !*to || !msg || !len || len > CARRIER_MAX_APP_BULKMSG_LEN ||
+        strnlen(to, sizeof(item->to)) >= sizeof(item->to)) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
+        return -1;
+    }
+
     item = (UnconfirmedMsg *)rc_zalloc(sizeof(UnconfirmedMsg) + len, NULL);
     if (!item) {
         carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_OUT_OF_MEMORY));
@@ -4302,7 +4367,7 @@ int send_message_with_receipt_internal(Carrier *w, const char *to,
 
     _msgid = generate_msgid(w);
 
-    strcpy(item->to, to);
+    copy_peer_str(item->to, sizeof(item->to), to);
     item->callback = cb;
     item->context  = context;
     item->size     = len;
