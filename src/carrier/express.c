@@ -1102,6 +1102,35 @@ static int http_do(ExpressConnector *connector,
 }
 
 /*
+ * Base58 for a value the Express node decodes with a standard decoder, where
+ * every leading zero byte is a leading '1'. The shared base58_encode drops
+ * leading zero bytes, so an encrypted value whose random nonce began with
+ * 0x00 (1 in 256) reached the node one byte short and the request was
+ * refused (HTTP 400, reported here as 8700000f) until a later attempt drew
+ * another nonce.
+ */
+static char *base58_encode_std(const uint8_t *data, size_t len,
+                               char *buf, size_t buf_size)
+{
+    size_t zeros = 0;
+    size_t rest;
+
+    while (zeros < len && data[zeros] == 0)
+        zeros++;
+    if (zeros + 1 > buf_size)
+        return NULL;
+    memset(buf, '1', zeros);
+    buf[zeros] = '\0';
+    if (zeros == len)
+        return buf;
+
+    rest = buf_size - zeros;
+    if (!base58_encode(data + zeros, len - zeros, buf + zeros, &rest))
+        return NULL;
+    return buf;
+}
+
+/*
  * DELETE /<me>?until=<ts> on ONE node. The timestamp was handed out by that
  * node, so it must never be sent to any other node: another node's clock
  * could be ahead and the request would wipe messages there that were never
@@ -1132,11 +1161,11 @@ static int del_msgs_on(ExpressConnector *connector, ExpNode *node, uint64_t msg_
     }
     crypted_sz = rc;
 
-    encoded_sz = crypted_sz * 1.4f + 1;
+    encoded_sz = crypted_sz * 1.4f + 2;
     encoded_data = alloca(encoded_sz);
-    encoded_data = base58_encode(crypted_data, crypted_sz,
-                                encoded_data, &encoded_sz);
-    if(encoded_data == NULL || encoded_sz <= 0) {
+    encoded_data = base58_encode_std(crypted_data, crypted_sz,
+                                     encoded_data, encoded_sz);
+    if(encoded_data == NULL) {
         vlogE("Express: encode last time failed.");
         return CARRIER_EXPRESS_ERROR(ERROR_INVALID_CREDENTIAL);
     }
