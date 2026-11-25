@@ -230,7 +230,7 @@ char *carrier_get_strerror(int error, char *buf, size_t len)
 
     faci_desc = (FacilityDesc*)&facility_codes[facility - 1];
     desc_len = strlen(faci_desc->desc);
-    if (len < desc_len) {
+    if (len <= desc_len) {
         carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_BUFFER_TOO_SMALL));
         return NULL;
     }
