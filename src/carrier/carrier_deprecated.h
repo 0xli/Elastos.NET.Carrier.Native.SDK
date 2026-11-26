@@ -1462,6 +1462,19 @@ typedef void ElaFriendMessageReceiptCallback(uint32_t msgid,
  *      Otherwise, return -1, and a specific error code can be
  *      retrieved by calling ela_get_error().
  */
+/**
+ * \~English
+ * Pull the offline (Express) mailbox now on every configured Express node.
+ * See carrier_express_pull_now().
+ *
+ * @return
+ *      0 if a pull is queued (or one already was), otherwise -1; see
+ *      ela_get_error().
+ */
+DEPRECATED_WITH(carrier_express_pull_now)
+int ela_express_pull_now(ElaCarrier *carrier)
+ALIAS(ela_express_pull_now, carrier_express_pull_now);
+
 DEPRECATED_WITH(carrier_send_friend_message)
 int ela_send_friend_message(ElaCarrier *carrier, const char *to,
                             const void *message, size_t len,

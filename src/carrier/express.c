@@ -91,6 +91,11 @@ struct ExpConnector {
     linked_list_t *task_list;
     int stop_flag;
 
+    // Pull tasklets waiting in task_list (0 or 1, see
+    // express_enqueue_pull_messages) and pulls started so far. Under `lock`.
+    int pulls_queued;
+    unsigned pulls_started;
+
     uint32_t magic_num;
 
     // Offline messages from senders who are not friends (yet), kept on disk
@@ -1361,6 +1366,15 @@ static int pullmsgs_runner(ExpTasklet *base)
     int pulled = 0;
     int last_rc = 0;
 
+    // From here on a new request queues another pull: this one may already
+    // be past the node a message has just been stored on.
+    pthread_mutex_lock(&connector->lock);
+    if (connector->pulls_queued > 0)
+        connector->pulls_queued--;
+    connector->pulls_started++;
+    vlogD("Express: pull #%u started", connector->pulls_started);
+    pthread_mutex_unlock(&connector->lock);
+
     /*
      * Visit EVERY configured node; a message lives only on the node its
      * sender posted it to. A node that fails is logged and skipped, never
@@ -1767,11 +1781,25 @@ int express_enqueue_post_message_with_receipt(ExpressConnector *connector,
     return 0;
 }
 
+/*
+ * Ask for a pull of every node. Any thread. Requests are coalesced: while a
+ * pull is waiting in the queue another request adds nothing (that pull has
+ * not started, so it will see whatever the caller wants picked up); while a
+ * pull is running, one more is queued behind it. So there is never more than
+ * the pull in progress plus one queued, however often this is called.
+ */
 int express_enqueue_pull_messages(ExpressConnector *connector)
 {
     ExpPullTasklet *task;
 
     assert(connector);
+
+    pthread_mutex_lock(&connector->lock);
+    if (connector->pulls_queued > 0) {
+        pthread_mutex_unlock(&connector->lock);
+        return 0;
+    }
+    pthread_mutex_unlock(&connector->lock);
 
     task = (ExpPullTasklet *)rc_zalloc(sizeof(ExpPullTasklet), NULL);
     if (!task)
@@ -1782,6 +1810,12 @@ int express_enqueue_pull_messages(ExpressConnector *connector)
     task->base.runner = pullmsgs_runner;
 
     pthread_mutex_lock(&connector->lock);
+    if (connector->pulls_queued > 0) {      // another thread got in first
+        pthread_mutex_unlock(&connector->lock);
+        deref(task);
+        return 0;
+    }
+    connector->pulls_queued++;
     linked_list_push_head(connector->task_list, &task->base.entry);
     pthread_mutex_unlock(&connector->lock);
 
