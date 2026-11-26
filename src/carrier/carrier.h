@@ -1118,6 +1118,28 @@ void carrier_network_changed(Carrier *carrier);
  *      0 if the message went out over the session. -1 otherwise (the friend
  *      is not connected, or an error), with the code from carrier_get_error().
  */
+/**
+ * \~English
+ * Pull the offline (Express) mailbox now, on every configured Express node,
+ * instead of waiting for the regular pull timer. For an application that is
+ * told out of band that mail is waiting (a doorbell, a push).
+ *
+ * May be called from any thread. It only queues the pull; messages and friend
+ * requests arrive through the usual callbacks on the carrier thread. Calls
+ * are coalesced: at most the pull in progress plus one queued behind it, so
+ * calling it for every notification is fine.
+ *
+ * @param
+ *      carrier     [in] A handle to the Carrier node instance.
+ *
+ * @return
+ *      0 if a pull is queued (or one already was).
+ *      Otherwise -1, and a specific error code can be retrieved by calling
+ *      carrier_get_error(): ERROR_NOT_EXIST if no Express node is configured.
+ */
+CARRIER_API
+int carrier_express_pull_now(Carrier *carrier);
+
 CARRIER_API
 int carrier_send_friend_message_live(Carrier *carrier, const char *to,
                                      const void *message, size_t len);

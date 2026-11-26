@@ -11,6 +11,11 @@
  *          (express_enqueue_post_request, the same path carrier_add_friend
  *          takes when the friend is offline) to --to <address> with
  *          --hello <text>; wait --wait seconds for the laundry thread, exit.
+ *   pullnow run the carrier loop and read commands from stdin: "pull [N]"
+ *          calls carrier_express_pull_now() N times in a row (default 1) and
+ *          prints "PULLNOW calls=N ok=K err=0x.. t=<ms>"; "quit" (or EOF)
+ *          ends. Prints "READY" once the loop is running. Messages print as
+ *          in pull mode, with t=<ms> (wall clock) appended.
  *   pull   run the carrier loop, which pulls from every node right away,
  *          for --wait seconds; print "REQUEST from=<userid> hello=<text>"
  *          for each offline friend request delivered, then print the
@@ -27,6 +32,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <getopt.h>
+#include <sys/time.h>
 
 #include <crystal.h>
 #include <dirent.h>
@@ -36,6 +42,13 @@
 #include "express.h"
 
 #define MAX_NODES 8
+
+static long long now_ms(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
 
 static pthread_mutex_t out_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_accept_requests;   // --accept: accept every friend request as it arrives
@@ -58,8 +71,8 @@ static void on_friend_message(Carrier *w, const char *from, const void *msg, siz
 {
     (void)w; (void)context;
     pthread_mutex_lock(&out_lock);
-    printf("MESSAGE from=%s len=%zu fnv=%08x ts=%lld offline=%d\n", from, len, fnv1a(msg, len),
-           (long long)timestamp, offline ? 1 : 0);
+    printf("MESSAGE from=%s len=%zu fnv=%08x ts=%lld offline=%d t=%lld\n", from, len, fnv1a(msg, len),
+           (long long)timestamp, offline ? 1 : 0, now_ms());
     fflush(stdout);
     pthread_mutex_unlock(&out_lock);
 }
@@ -111,12 +124,13 @@ static void *run_thread(void *arg)
 static void usage(void)
 {
     fprintf(stderr,
-        "usage: express_multinode_test init|send|sendmsg|pull --data DIR [--node host:port:pk]...\n"
+        "usage: express_multinode_test init|send|sendmsg|pull|pullnow --data DIR [--node host:port:pk]...\n"
         "       [--to ADDRESS|USERID --hello TEXT] [--size BYTES] [--wait SECONDS] [--loglevel N]\n"
         "       [--friend USERID]... [--accept]\n"
         "  send     post an offline friend request to --to ADDRESS\n"
         "  sendmsg  post an offline friend message to --to USERID (--hello text, or --size bytes)\n"
-        "  pull     pull; --friend adds friends first, --accept accepts requests as they arrive\n");
+        "  pull     pull; --friend adds friends first, --accept accepts requests as they arrive\n"
+        "  pullnow  run until \"quit\" on stdin; \"pull [N]\" calls carrier_express_pull_now N times\n");
 }
 
 static void print_state(const char *data_dir)
@@ -348,6 +362,35 @@ int main(int argc, char *argv[])
         printf("POSTEDMSG to=%s len=%zu fnv=%08x\n", to, body_len, fnv1a(body, body_len));
         fflush(stdout);
         free(body);
+    } else if (strcmp(mode, "pullnow") == 0) {
+        char line[64];
+
+        pthread_mutex_lock(&out_lock);
+        printf("READY\n");
+        fflush(stdout);
+        pthread_mutex_unlock(&out_lock);
+
+        while (fgets(line, sizeof(line), stdin)) {
+            if (strncmp(line, "pull", 4) == 0) {
+                int n = atoi(line + 4), ok = 0, err = 0, k;
+
+                if (n < 1)
+                    n = 1;
+                for (k = 0; k < n; k++) {
+                    if (carrier_express_pull_now(w) == 0)
+                        ok++;
+                    else
+                        err = carrier_get_error();
+                }
+                pthread_mutex_lock(&out_lock);
+                printf("PULLNOW calls=%d ok=%d err=0x%x t=%lld\n", n, ok, (unsigned)err, now_ms());
+                fflush(stdout);
+                pthread_mutex_unlock(&out_lock);
+            } else if (strncmp(line, "quit", 4) == 0) {
+                break;
+            }
+        }
+        wait_sec = 0;
     } else if (strcmp(mode, "pull") == 0) {
         /* carrier_run pulls on its first iteration (do_express_expire);
          * one more explicit pull makes the test independent of that. */

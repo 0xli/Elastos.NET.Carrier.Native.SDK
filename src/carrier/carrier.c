@@ -4465,6 +4465,29 @@ int carrier_send_friend_message(Carrier *w, const char *to,
     return send_message_with_receipt_internal(w, to, message, len, msgid, cb, context);
 }
 
+int carrier_express_pull_now(Carrier *w)
+{
+    int rc;
+
+    if (!w) {
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_INVALID_ARGS));
+        return -1;
+    }
+
+    if (!w->connector) {    // no Express node configured
+        carrier_set_error(CARRIER_GENERAL_ERROR(ERROR_NOT_EXIST));
+        return -1;
+    }
+
+    rc = express_enqueue_pull_messages(w->connector);
+    if (rc < 0) {
+        carrier_set_error(rc);
+        return -1;
+    }
+
+    return 0;
+}
+
 int carrier_send_friend_message_live(Carrier *w, const char *to,
                                      const void *message, size_t len)
 {
